@@ -1,12 +1,17 @@
 package com.example.ui.browser
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -48,10 +53,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,6 +75,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -83,12 +93,103 @@ import com.example.ui.theme.resolveTonalColors
 import com.example.ui.viewmodel.BrowserTab
 import com.example.ui.viewmodel.TabGridEntry
 import kotlin.math.abs
+import kotlinx.coroutines.launch
+
+/**
+ * Horizontal swipe-to-delete wrapper for tab cards and tab rows.
+ * Translates and fades the card cleanly without rendering any red backdrop or icon behind it.
+ */
+@Composable
+internal fun SwipeToDeleteTabContainer(
+    tabId: String,
+    enabled: Boolean,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val currentOnDelete by rememberUpdatedState(onDelete)
+    val currentEnabled by rememberUpdatedState(enabled)
+
+    var containerWidthPx by remember { mutableFloatStateOf(0f) }
+    val offsetX = remember(tabId) { Animatable(0f) }
+    var isDismissed by remember(tabId) { mutableStateOf(false) }
+
+    LaunchedEffect(enabled) {
+        if (!enabled && offsetX.value != 0f && !isDismissed) {
+            offsetX.animateTo(0f, ApexMotion.spatialSpring())
+        }
+    }
+
+    val draggableState = rememberDraggableState { delta ->
+        if (!currentEnabled || isDismissed) return@rememberDraggableState
+        scope.launch {
+            val maxSwipe = if (containerWidthPx > 0f) containerWidthPx * 1.15f else 900f
+            offsetX.snapTo((offsetX.value + delta).coerceIn(-maxSwipe, maxSwipe))
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .onSizeChanged { size ->
+                containerWidthPx = size.width.toFloat()
+            }
+            .graphicsLayer {
+                val width = if (containerWidthPx > 0f) containerWidthPx else 420f
+                val fadeProgress = (abs(offsetX.value) / width).coerceIn(0f, 1f)
+                translationX = offsetX.value
+                rotationZ = (offsetX.value / width) * 3.5f
+                alpha = (1f - fadeProgress * 0.55f).coerceIn(0.25f, 1f)
+            }
+            .draggable(
+                state = draggableState,
+                orientation = Orientation.Horizontal,
+                enabled = currentEnabled && !isDismissed,
+                onDragStopped = { velocity ->
+                    if (isDismissed) return@draggable
+                    val currentOffset = offsetX.value
+                    val width = if (containerWidthPx > 0f) containerWidthPx else 420f
+                    val shouldDismissByDistance = abs(currentOffset) >= width * 0.38f
+                    val shouldDismissByFling = abs(velocity) >= 750f &&
+                        abs(currentOffset) >= width * 0.14f &&
+                        (currentOffset * velocity > 0f)
+
+                    if (shouldDismissByDistance || shouldDismissByFling) {
+                        isDismissed = true
+                        val direction = when {
+                            currentOffset != 0f -> if (currentOffset > 0f) 1f else -1f
+                            velocity > 0f -> 1f
+                            else -> -1f
+                        }
+                        val targetExit = direction * (width * 1.25f)
+                        scope.launch {
+                            offsetX.animateTo(
+                                targetValue = targetExit,
+                                animationSpec = tween(durationMillis = 160)
+                            )
+                            currentOnDelete()
+                        }
+                    } else {
+                        scope.launch {
+                            offsetX.animateTo(
+                                targetValue = 0f,
+                                animationSpec = ApexMotion.spatialSpring()
+                            )
+                        }
+                    }
+                }
+            )
+    ) {
+        content()
+    }
+}
 
 @Composable
 internal fun SingleTabGridCard(
     tab: BrowserTab,
     isSelected: Boolean,
     isDropTarget: Boolean,
+    swipeToDeleteEnabled: Boolean = true,
     onClick: () -> Unit,
     onClose: () -> Unit,
     onCycleTabColor: () -> Unit,
@@ -144,25 +245,31 @@ internal fun SingleTabGridCard(
         else -> 1.dp
     }
 
-    Card(
-        shape = cardShape,
-        colors = CardDefaults.cardColors(
-            containerColor = containerColor,
-            contentColor = contentColor
-        ),
-        border = BorderStroke(
-            width = borderWidth,
-            color = borderColor
-        ),
-        elevation = CardDefaults.cardElevation(
-            defaultElevation = if (isSelected) 4.dp else 1.dp
-        ),
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(238.dp)
-            .clickable(onClick = onClick)
-            .testTag("grid_tab_card_${tab.id}")
+    SwipeToDeleteTabContainer(
+        tabId = tab.id,
+        enabled = swipeToDeleteEnabled,
+        onDelete = onClose,
+        modifier = Modifier.fillMaxWidth()
     ) {
+        Card(
+            shape = cardShape,
+            colors = CardDefaults.cardColors(
+                containerColor = containerColor,
+                contentColor = contentColor
+            ),
+            border = BorderStroke(
+                width = borderWidth,
+                color = borderColor
+            ),
+            elevation = CardDefaults.cardElevation(
+                defaultElevation = if (isSelected) 4.dp else 1.dp
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(238.dp)
+                .clickable(onClick = onClick)
+                .testTag("grid_tab_card_${tab.id}")
+        ) {
         Column(
             verticalArrangement = Arrangement.SpaceBetween,
             modifier = Modifier
@@ -573,6 +680,7 @@ internal fun SingleTabGridCard(
                     }
                 }
             }
+        }
         }
     }
 }
@@ -1208,38 +1316,46 @@ internal fun ExpandedGroupModal(
                             innerRadius = 5.dp
                         )
 
-                        Surface(
-                            shape = itemShape,
-                            color = if (isSelected) {
-                                tabPalette.container
-                            } else {
-                                MaterialTheme.colorScheme.surfaceContainerHigh
-                            },
-                            border = if (isSelected || isRowDragged) {
-                                BorderStroke(1.5.dp, tabPalette.accent)
-                            } else {
-                                null
-                            },
+                        SwipeToDeleteTabContainer(
+                            tabId = tab.id,
+                            enabled = draggedTabId == null,
+                            onDelete = { onCloseTab(tab.id) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .zIndex(if (isRowDragged) 30f else 0f)
-                                .onGloballyPositioned { coords ->
-                                    if (!isRowDragged) {
-                                        rowBoundsMap[tab.id] = coords.boundsInRoot()
+                        ) {
+                            Surface(
+                                shape = itemShape,
+                                color = if (isSelected) {
+                                    tabPalette.container
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainerHigh
+                                },
+                                border = if (isSelected || isRowDragged) {
+                                    BorderStroke(1.5.dp, tabPalette.accent)
+                                } else {
+                                    null
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .onGloballyPositioned { coords ->
+                                        if (!isRowDragged) {
+                                            rowBoundsMap[tab.id] = coords.boundsInRoot()
+                                        }
                                     }
-                                }
-                                .graphicsLayer {
-                                    if (isRowDragged) {
-                                        translationX = dragOffset.x
-                                        translationY = dragOffset.y
-                                        scaleX = 1.03f
-                                        scaleY = 1.03f
-                                        alpha = 0.94f
+                                    .graphicsLayer {
+                                        if (isRowDragged) {
+                                            translationX = dragOffset.x
+                                            translationY = dragOffset.y
+                                            scaleX = 1.03f
+                                            scaleY = 1.03f
+                                            alpha = 0.94f
+                                        }
                                     }
-                                }
-                                .clip(itemShape)
-                                .clickable { onSelectTab(tab.id) }
-                                .pointerInput(tab.id) {
+                                    .clip(itemShape)
+                                    .clickable { onSelectTab(tab.id) }
+                                    .testTag("group_modal_tab_row_${tab.id}")
+                                    .pointerInput(tab.id) {
                                     detectDragGesturesAfterLongPress(
                                         onDragStart = {
                                             draggedTabId = tab.id
@@ -1351,6 +1467,7 @@ internal fun ExpandedGroupModal(
                                     )
                                 }
                             }
+                        }
                         }
                     }
                 }

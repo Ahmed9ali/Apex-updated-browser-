@@ -118,6 +118,15 @@ class BrowserRepository(
                 ?.apply()
         }
 
+        // Ensure Desktop Viewport starts off by default
+        val resetDesktopDefault = sharedPrefs?.getBoolean("reset_default_desktop_viewport_v1", false) ?: true
+        if (!resetDesktopDefault) {
+            preferencesRepository.setDesktopViewportEnabled(false)
+            sharedPrefs?.edit()
+                ?.putBoolean("reset_default_desktop_viewport_v1", true)
+                ?.apply()
+        }
+
         // Restore only real user-added top visits from SharedPreferences if DB is empty
         if (dao.getTopVisitsOnce().isEmpty()) {
             val restoredJson = sharedPrefs?.getString("user_added_top_visits_json", null)

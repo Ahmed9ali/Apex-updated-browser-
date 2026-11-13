@@ -19,11 +19,20 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.down
+import androidx.compose.ui.test.moveBy
+import androidx.compose.ui.test.swipe
 import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.test.swipeRight
+import androidx.compose.ui.test.up
 import androidx.compose.ui.unit.dp
+import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
+import androidx.compose.material3.windowsizeclass.WindowSizeClass
+import androidx.compose.ui.unit.DpSize
 import com.example.ui.browser.BrowserMenuBottomSheet
+import com.example.ui.browser.BrowserScreen
 import com.example.ui.browser.CompactTopToolbar
+import com.example.ui.browser.DraggableTabGridOverlay
 import com.example.ui.browser.GroupedListSpacing
 import com.example.ui.browser.SettingsScreenOverlay
 import com.example.ui.browser.groupedListItemShape
@@ -36,6 +45,7 @@ import com.example.ui.theme.SeedPalettePreset
 import com.example.ui.theme.TabGroupColorOption
 import com.example.ui.viewmodel.BrowserTab
 import com.example.ui.viewmodel.BrowserUiState
+import com.example.ui.viewmodel.BrowserViewModel
 import com.example.ui.viewmodel.TabGridEntry
 import com.example.ui.viewmodel.TabGroupInfo
 import android.content.Context
@@ -59,6 +69,7 @@ import com.example.engine.SecurePasswordGenerator
 import com.example.ui.browser.PasswordManagerScreenOverlay
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.onNodeWithText
+import kotlinx.coroutines.flow.first
 import java.io.File
 import java.net.ServerSocket
 import java.util.concurrent.CountDownLatch
@@ -993,6 +1004,253 @@ class ExampleRobolectricTest {
         composeTestRule.waitForIdle()
         assertFalse(desktopEnabled)
         assertTrue(menuOpen)
+    }
+
+    @Test
+    fun `verify horizontal swipe left and right deletes tab card while small swipe cancels and tap selects`() {
+        val tab1 = BrowserTab(id = "tab_swipe_1", title = "Docs", url = "https://kotlinlang.org")
+        val tab2 = BrowserTab(id = "tab_swipe_2", title = "News", url = "https://news.ycombinator.com")
+        val tab3 = BrowserTab(id = "tab_swipe_3", title = "Home", url = "apex://home")
+
+        var tabs by mutableStateOf(listOf(tab1, tab2, tab3))
+        var selectedTabId by mutableStateOf<String?>(null)
+        val closedTabIds = mutableListOf<String>()
+
+        composeTestRule.setContent {
+            ApexBrowserTheme {
+                DraggableTabGridOverlay(
+                    gridEntries = tabs.map { TabGridEntry.SingleTab(it) },
+                    totalOpenTabs = tabs.size,
+                    activeTabId = tab1.id,
+                    expandedGroupId = null,
+                    onSelectTab = { selectedTabId = it },
+                    onCloseTab = { id ->
+                        closedTabIds.add(id)
+                        tabs = tabs.filterNot { it.id == id }
+                    },
+                    onCloseGroup = {},
+                    onEditGroup = {},
+                    onMergeEntries = { _, _ -> },
+                    onMoveGroupedTabToTarget = { _, _ -> },
+                    onOpenGroup = {},
+                    onAddTabToGroup = {},
+                    onUngroupTab = {},
+                    onCycleTabColor = {},
+                    onNewTab = {},
+                    onCreateGroup = {},
+                    onResetAllTabs = {},
+                    onDismiss = {}
+                )
+            }
+        }
+
+        // 1. Small partial horizontal swipe below threshold springs back without deleting
+        composeTestRule.onNodeWithTag("grid_tab_card_tab_swipe_1").performTouchInput {
+            swipe(
+                start = center,
+                end = center.copy(x = center.x + (width * 0.12f)),
+                durationMillis = 300
+            )
+        }
+        composeTestRule.waitForIdle()
+        assertTrue(closedTabIds.isEmpty())
+        composeTestRule.onNodeWithTag("grid_tab_card_tab_swipe_1").assertIsDisplayed()
+
+        // 2. Tap still selects the tab
+        composeTestRule.onNodeWithTag("grid_tab_card_tab_swipe_1").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals("tab_swipe_1", selectedTabId)
+
+        // 3. Full horizontal swipe left deletes tab_swipe_2
+        composeTestRule.onNodeWithTag("grid_tab_card_tab_swipe_2").performTouchInput {
+            swipeLeft()
+        }
+        composeTestRule.waitForIdle()
+        assertTrue(closedTabIds.contains("tab_swipe_2"))
+        composeTestRule.onNodeWithTag("grid_tab_card_tab_swipe_2").assertDoesNotExist()
+
+        // 4. Full horizontal swipe right deletes tab_swipe_3
+        composeTestRule.onNodeWithTag("grid_tab_card_tab_swipe_3").performTouchInput {
+            swipeRight()
+        }
+        composeTestRule.waitForIdle()
+        assertTrue(closedTabIds.contains("tab_swipe_3"))
+        composeTestRule.onNodeWithTag("grid_tab_card_tab_swipe_3").assertDoesNotExist()
+    }
+
+    @Test
+    fun `verify horizontal swipe deletes tab row inside expanded group modal`() {
+        val group = TabGroupInfo(id = "grp_swipe", title = "Work")
+        val member1 = BrowserTab(
+            id = "grp_tab_1",
+            title = "GitHub",
+            url = "https://github.com",
+            groupId = group.id
+        )
+        val member2 = BrowserTab(
+            id = "grp_tab_2",
+            title = "Android Docs",
+            url = "https://developer.android.com",
+            groupId = group.id
+        )
+        var groupTabs by mutableStateOf(listOf(member1, member2))
+        val closedTabIds = mutableListOf<String>()
+
+        composeTestRule.setContent {
+            ApexBrowserTheme {
+                DraggableTabGridOverlay(
+                    gridEntries = listOf(TabGridEntry.GroupTab(group = group, tabs = groupTabs)),
+                    totalOpenTabs = groupTabs.size,
+                    activeTabId = member1.id,
+                    expandedGroupId = group.id,
+                    onSelectTab = {},
+                    onCloseTab = { id ->
+                        closedTabIds.add(id)
+                        groupTabs = groupTabs.filterNot { it.id == id }
+                    },
+                    onCloseGroup = {},
+                    onEditGroup = {},
+                    onMergeEntries = { _, _ -> },
+                    onMoveGroupedTabToTarget = { _, _ -> },
+                    onOpenGroup = {},
+                    onAddTabToGroup = {},
+                    onUngroupTab = {},
+                    onCycleTabColor = {},
+                    onNewTab = {},
+                    onCreateGroup = {},
+                    onResetAllTabs = {},
+                    onDismiss = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("expanded_group_modal").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("group_modal_tab_row_grp_tab_2").performTouchInput {
+            swipeLeft()
+        }
+        composeTestRule.waitForIdle()
+        assertEquals(listOf("grp_tab_2"), closedTabIds)
+        composeTestRule.onNodeWithTag("group_modal_tab_row_grp_tab_2").assertDoesNotExist()
+    }
+
+    @Test
+    fun `verify desktop viewport defaults off and swipe to delete has no red backdrop`() {
+        // Default BrowserPreferences keeps desktop viewport disabled
+        assertFalse(BrowserPreferences().desktopViewportEnabled)
+
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, ApexDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val sharedPrefs = context.getSharedPreferences("apex_browser_user_preferences", Context.MODE_PRIVATE)
+        sharedPrefs.edit()
+            .putBoolean("desktop_viewport_enabled", true)
+            .remove("reset_default_desktop_viewport_v1")
+            .apply()
+        val prefsRepo = UserPreferencesRepository(context)
+        val repository = BrowserRepository(db.apexDao(), prefsRepo, sharedPrefs)
+
+        val prefsAfterInit = runBlocking {
+            repository.ensureFreshInitialized()
+            repository.preferencesFlow.first()
+        }
+        assertFalse(prefsAfterInit.desktopViewportEnabled)
+        db.close()
+
+        // Mid-swipe check confirms no red delete backdrop or delete icon is rendered
+        val tab1 = BrowserTab(id = "tab_nobg_1", title = "Docs", url = "https://kotlinlang.org")
+        var tabs by mutableStateOf(listOf(tab1))
+        composeTestRule.setContent {
+            ApexBrowserTheme {
+                DraggableTabGridOverlay(
+                    gridEntries = tabs.map { TabGridEntry.SingleTab(it) },
+                    totalOpenTabs = tabs.size,
+                    activeTabId = tab1.id,
+                    expandedGroupId = null,
+                    onSelectTab = {},
+                    onCloseTab = { id -> tabs = tabs.filterNot { it.id == id } },
+                    onCloseGroup = {},
+                    onEditGroup = {},
+                    onMergeEntries = { _, _ -> },
+                    onMoveGroupedTabToTarget = { _, _ -> },
+                    onOpenGroup = {},
+                    onAddTabToGroup = {},
+                    onUngroupTab = {},
+                    onCycleTabColor = {},
+                    onNewTab = {},
+                    onCreateGroup = {},
+                    onResetAllTabs = {},
+                    onDismiss = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("grid_tab_card_tab_nobg_1").performTouchInput {
+            down(center)
+            moveBy(androidx.compose.ui.geometry.Offset(-80f, 0f))
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("swipe_delete_backdrop_tab_nobg_1").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("grid_tab_card_tab_nobg_1").performTouchInput { up() }
+        composeTestRule.waitForIdle()
+    }
+
+    @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
+    @Test
+    fun `verify swipe to delete tab shows undo snackbar and undo restores closed tab`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, ApexDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val sharedPrefs = context.getSharedPreferences("test_undo_tab_prefs", Context.MODE_PRIVATE)
+        val prefsRepo = UserPreferencesRepository(context)
+        val repository = BrowserRepository(db.apexDao(), prefsRepo, sharedPrefs)
+        val viewModel = BrowserViewModel(repository)
+
+        viewModel.createNewTab(stayInSwitcher = true)
+        val secondTab = viewModel.uiState.value.tabs.last()
+        viewModel.setTabSwitcherOpen(true)
+
+        composeTestRule.setContent {
+            ApexBrowserTheme {
+                BrowserScreen(
+                    viewModel = viewModel,
+                    windowSizeClass = WindowSizeClass.calculateFromSize(DpSize(412.dp, 915.dp))
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        assertEquals(2, viewModel.uiState.value.tabs.size)
+        composeTestRule.onNodeWithTag("grid_tab_card_${secondTab.id}").assertIsDisplayed()
+
+        // Swipe horizontally to delete the second tab
+        composeTestRule.onNodeWithTag("grid_tab_card_${secondTab.id}").performTouchInput {
+            swipeLeft()
+        }
+        composeTestRule.waitForIdle()
+
+        assertEquals(1, viewModel.uiState.value.tabs.size)
+        composeTestRule.onNodeWithTag("grid_tab_card_${secondTab.id}").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Undo").assertIsDisplayed()
+
+        // Snackbar must sit cleanly above the Add (+) button with no overlap
+        val snackbarBounds = composeTestRule.onNodeWithTag("browser_snackbar_host").fetchSemanticsNode().boundsInRoot
+        val addButtonBounds = composeTestRule.onNodeWithTag("switcher_new_tab_fab").fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "Expected snackbar bottom (${snackbarBounds.bottom}) <= Add button top (${addButtonBounds.top})",
+            snackbarBounds.bottom <= addButtonBounds.top
+        )
+
+        // Tap Undo on the Snackbar -> restores the closed tab
+        composeTestRule.onNodeWithText("Undo").performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals(2, viewModel.uiState.value.tabs.size)
+        assertTrue(viewModel.uiState.value.tabs.any { it.id == secondTab.id })
+        composeTestRule.onNodeWithTag("grid_tab_card_${secondTab.id}").assertIsDisplayed()
+
+        db.close()
     }
 }
 

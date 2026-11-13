@@ -114,6 +114,11 @@ data class PendingCredentialPrompt(
     val existingId: Long? = null
 )
 
+data class PendingClosedTabUndo(
+    val token: Long,
+    val tabTitle: String
+)
+
 data class BrowserUiState(
     // Fresh launch: strictly 1 clean Home tab — no pre-opened tabs
     val tabs: List<BrowserTab> = listOf(
@@ -143,6 +148,7 @@ data class BrowserUiState(
     val matchedCredentialsForActiveTab: List<SavedPasswordEntity> = emptyList(),
     val activeExtension: ExtensionModule = ExtensionModule.NANO,
     val snackbarNotice: String? = null,
+    val pendingClosedTabUndo: PendingClosedTabUndo? = null,
     val preloadCandidates: List<PreloadCandidate> = emptyList(),
     val nanoMessages: List<NanoChatMessage> = listOf(
         NanoChatMessage(
@@ -342,8 +348,20 @@ class BrowserViewModel(
         val recordedAtMillis: Long
     )
 
+    private data class ClosedTabSnapshot(
+        val token: Long,
+        val tab: BrowserTab,
+        val originalIndex: Int,
+        val previousActiveTabId: String,
+        val previousExpandedGroupId: String?,
+        val groupInfo: TabGroupInfo?,
+        val autoCreatedReplacementTabId: String?
+    )
+
     private val webViewRegistry = mutableMapOf<String, WebView>()
     private val lastRecordedVisitByTab = mutableMapOf<String, RecordedTabVisit>()
+    private val closedTabHistory = mutableListOf<ClosedTabSnapshot>()
+    private var nextClosedTabUndoToken = 1L
     private var suggestionJob: Job? = null
 
     init {
@@ -365,6 +383,16 @@ class BrowserViewModel(
 
     fun consumeSnackbarNotice() {
         _uiState.update { it.copy(snackbarNotice = null) }
+    }
+
+    fun consumeClosedTabUndo(token: Long) {
+        _uiState.update { state ->
+            if (state.pendingClosedTabUndo?.token == token) {
+                state.copy(pendingClosedTabUndo = null)
+            } else {
+                state
+            }
+        }
     }
 
     // --- Dedicated Search Screen & Search-Engine Suggestions ---
@@ -1391,19 +1419,28 @@ class BrowserViewModel(
     }
 
     fun closeTab(tabId: String) {
-        val currentTabs = _uiState.value.tabs
-        val closingTab = currentTabs.firstOrNull { it.id == tabId }
+        val snapshotBeforeClose = _uiState.value
+        val closingIndex = snapshotBeforeClose.tabs.indexOfFirst { it.id == tabId }
+        val closingTab = if (closingIndex >= 0) snapshotBeforeClose.tabs[closingIndex] else null
+        if (closingTab == null) return
+
+        val closingGroupInfo = closingTab.groupId?.let { gId ->
+            snapshotBeforeClose.tabGroups.firstOrNull { it.id == gId }
+        }
+        val undoToken = nextClosedTabUndoToken++
+
         lastRecordedVisitByTab.remove(tabId)
         webViewRegistry.remove(tabId)?.let { wv ->
-            destroyWebViewSafely(wv, isIncognito = closingTab?.isPrivate == true)
+            destroyWebViewSafely(wv, isIncognito = closingTab.isPrivate)
         }
 
-        val remainingAfterClose = currentTabs.filterNot { it.id == tabId }
-        val incognitoSessionEnded = closingTab?.isPrivate == true && remainingAfterClose.none { it.isPrivate }
+        val remainingAfterClose = snapshotBeforeClose.tabs.filterNot { it.id == tabId }
+        val incognitoSessionEnded = closingTab.isPrivate && remainingAfterClose.none { it.isPrivate }
         if (incognitoSessionEnded) {
             performanceOptimizer.wipeIncognitoSessionStorage()
         }
 
+        var autoReplacementTabId: String? = null
         _uiState.update { state ->
             val closedTab = state.tabs.firstOrNull { it.id == tabId }
             val remaining = state.tabs.filterNot { it.id == tabId }
@@ -1414,6 +1451,7 @@ class BrowserViewModel(
             }
             if (remaining.isEmpty()) {
                 val fresh = BrowserTab(title = "Home", url = "apex://home")
+                autoReplacementTabId = fresh.id
                 state.copy(
                     tabs = listOf(fresh),
                     tabGroups = emptyList(),
@@ -1421,7 +1459,11 @@ class BrowserViewModel(
                     editingGroupId = null,
                     activeTabId = fresh.id,
                     isIncognitoUnlocked = false,
-                    snackbarNotice = sessionNotice
+                    snackbarNotice = sessionNotice,
+                    pendingClosedTabUndo = PendingClosedTabUndo(
+                        token = undoToken,
+                        tabTitle = closedTab?.title ?: closingTab.title
+                    )
                 )
             } else {
                 val (cleanTabs, cleanGroups) = normalizeGroups(remaining, state.tabGroups)
@@ -1447,9 +1489,84 @@ class BrowserViewModel(
                     editingGroupId = validEditing,
                     activeTabId = nextActiveId,
                     isIncognitoUnlocked = cleanTabs.any { it.isPrivate },
-                    snackbarNotice = sessionNotice
+                    snackbarNotice = sessionNotice,
+                    pendingClosedTabUndo = PendingClosedTabUndo(
+                        token = undoToken,
+                        tabTitle = closedTab?.title ?: closingTab.title
+                    )
                 )
             }
+        }
+
+        closedTabHistory.add(
+            ClosedTabSnapshot(
+                token = undoToken,
+                tab = closingTab,
+                originalIndex = closingIndex,
+                previousActiveTabId = snapshotBeforeClose.activeTabId,
+                previousExpandedGroupId = snapshotBeforeClose.expandedGroupId,
+                groupInfo = closingGroupInfo,
+                autoCreatedReplacementTabId = autoReplacementTabId
+            )
+        )
+        if (closedTabHistory.size > 10) {
+            closedTabHistory.removeAt(0)
+        }
+    }
+
+    fun undoLastClosedTab() {
+        val snapshot = closedTabHistory.removeLastOrNull() ?: return
+        _uiState.update { state ->
+            val baseTabs = if (
+                snapshot.autoCreatedReplacementTabId != null &&
+                state.tabs.size == 1 &&
+                state.tabs.first().id == snapshot.autoCreatedReplacementTabId
+            ) {
+                emptyList()
+            } else {
+                state.tabs
+            }
+
+            if (baseTabs.any { it.id == snapshot.tab.id }) {
+                return@update state.copy(pendingClosedTabUndo = null)
+            }
+
+            val restoredTabs = baseTabs.toMutableList().apply {
+                add(snapshot.originalIndex.coerceIn(0, size), snapshot.tab)
+            }
+            val restoredGroups = if (
+                snapshot.groupInfo != null &&
+                state.tabGroups.none { it.id == snapshot.groupInfo.id }
+            ) {
+                state.tabGroups + snapshot.groupInfo
+            } else {
+                state.tabGroups
+            }
+            val nextActiveId = when {
+                snapshot.autoCreatedReplacementTabId != null -> snapshot.tab.id
+                snapshot.previousActiveTabId == snapshot.tab.id -> snapshot.tab.id
+                restoredTabs.any { it.id == state.activeTabId } -> state.activeTabId
+                else -> snapshot.tab.id
+            }
+            val nextExpandedGroupId = when {
+                state.expandedGroupId != null && restoredGroups.any { it.id == state.expandedGroupId } -> {
+                    state.expandedGroupId
+                }
+                snapshot.previousExpandedGroupId != null &&
+                    restoredGroups.any { it.id == snapshot.previousExpandedGroupId } -> {
+                    snapshot.previousExpandedGroupId
+                }
+                else -> null
+            }
+
+            state.copy(
+                tabs = restoredTabs,
+                tabGroups = restoredGroups,
+                activeTabId = nextActiveId,
+                expandedGroupId = nextExpandedGroupId,
+                isIncognitoUnlocked = restoredTabs.any { it.isPrivate },
+                pendingClosedTabUndo = null
+            )
         }
     }
 
@@ -1485,6 +1602,7 @@ class BrowserViewModel(
         webViewRegistry.values.forEach { destroyWebViewSafely(it, isIncognito = false) }
         webViewRegistry.clear()
         lastRecordedVisitByTab.clear()
+        closedTabHistory.clear()
         if (hadIncognito) {
             performanceOptimizer.wipeIncognitoSessionStorage()
         }
@@ -1498,6 +1616,7 @@ class BrowserViewModel(
                 activeTabId = fresh.id,
                 isIncognitoUnlocked = false,
                 isTabSwitcherOpen = false,
+                pendingClosedTabUndo = null,
                 snackbarNotice = if (hadIncognito) {
                     "All tabs closed • Incognito session data wiped"
                 } else {

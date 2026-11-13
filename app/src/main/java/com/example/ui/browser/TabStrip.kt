@@ -732,6 +732,7 @@ fun DraggableTabGridOverlay(
                                             tab = entry.tab,
                                             isSelected = if (isSelectionMode) isTabMarkedSelected else entry.tab.id == activeTabId,
                                             isDropTarget = isDropTarget,
+                                            swipeToDeleteEnabled = !isSelectionMode && !isBeingDragged && draggedKey == null,
                                             onClick = {
                                                 if (isSelectionMode) {
                                                     selectedTabIds = if (isTabMarkedSelected) {

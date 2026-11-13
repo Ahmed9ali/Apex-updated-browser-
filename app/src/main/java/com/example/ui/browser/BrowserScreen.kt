@@ -20,9 +20,11 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -102,6 +104,7 @@ fun BrowserScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val viewBookmarksLabel = stringResource(R.string.action_view_bookmarks)
     val viewDownloadsLabel = stringResource(R.string.menu_downloads)
+    val undoLabel = stringResource(R.string.action_undo)
 
     var defaultBrowserStatus by remember {
         mutableStateOf(DefaultBrowserHelper.getStatus(context))
@@ -169,6 +172,23 @@ fun BrowserScreen(
         }
     }
 
+    LaunchedEffect(uiState.pendingClosedTabUndo?.token) {
+        val undoEvent = uiState.pendingClosedTabUndo ?: return@LaunchedEffect
+        val displayTitle = undoEvent.tabTitle.trim().ifBlank { "Tab" }.let {
+            if (it.length > 28) "${it.take(27)}…" else it
+        }
+        snackbarHostState.currentSnackbarData?.dismiss()
+        val result = snackbarHostState.showSnackbar(
+            message = context.getString(R.string.tab_closed_snackbar_message, displayTitle),
+            actionLabel = undoLabel,
+            duration = SnackbarDuration.Short
+        )
+        viewModel.consumeClosedTabUndo(undoEvent.token)
+        if (result == SnackbarResult.ActionPerformed) {
+            viewModel.undoLastClosedTab()
+        }
+    }
+
     BackHandler(
         enabled = canNavigateBack &&
             !uiState.isTabSwitcherOpen &&
@@ -186,7 +206,22 @@ fun BrowserScreen(
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
+        snackbarHost = {
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .then(
+                        if (uiState.isTabSwitcherOpen) {
+                            Modifier
+                                .windowInsetsPadding(WindowInsets.navigationBars)
+                                .padding(bottom = 100.dp)
+                        } else {
+                            Modifier
+                        }
+                    )
+                    .testTag("browser_snackbar_host")
+            )
+        },
         topBar = {
             if (!uiState.isSearchScreenOpen &&
                 !uiState.isSettingsScreenOpen &&
