@@ -59,6 +59,11 @@ class FastDownloadEngine(
     private val activeConnections = ConcurrentHashMap<Long, MutableSet<HttpURLConnection>>()
     private val downloadMutexes = ConcurrentHashMap<Long, Mutex>()
     private val downloadUserAgents = ConcurrentHashMap<Long, String>()
+    private val notificationHelper = DownloadNotificationHelper(context.applicationContext)
+
+    fun notifyExternalState(item: DownloadItemEntity) {
+        notificationHelper.notifyDownloadState(item, forceImmediate = true)
+    }
 
     private val defaultUserAgent =
         "Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
@@ -139,6 +144,7 @@ class FastDownloadEngine(
 
             val id = repository.upsertDownload(initialEntity)
             val savedEntity = initialEntity.copy(id = id)
+            notificationHelper.notifyDownloadState(savedEntity, forceImmediate = true)
             val effectiveUa = userAgent ?: defaultUserAgent
             downloadUserAgents[id] = effectiveUa
             val pFlag = pauseFlagFor(id, defaultValue = false)
@@ -176,14 +182,14 @@ class FastDownloadEngine(
                                 maxKnown
                             }
                         }
-                        repository.upsertDownload(
-                            existing.copy(
-                                status = STATUS_PAUSED,
-                                downloadedBytes = bestBytes,
-                                speedBytesPerSec = 0L,
-                                errorMessage = null
-                            )
+                        val pausedItem = existing.copy(
+                            status = STATUS_PAUSED,
+                            downloadedBytes = bestBytes,
+                            speedBytesPerSec = 0L,
+                            errorMessage = null
                         )
+                        repository.upsertDownload(pausedItem)
+                        notificationHelper.notifyDownloadState(pausedItem, forceImmediate = true)
                     }
                 }
             }
@@ -214,6 +220,7 @@ class FastDownloadEngine(
                     speedBytesPerSec = 0L
                 )
                 repository.upsertDownload(updated)
+                notificationHelper.notifyDownloadState(updated, forceImmediate = true)
                 updated
             } ?: return@launch
 
@@ -252,6 +259,7 @@ class FastDownloadEngine(
                     completedAt = null
                 )
                 repository.upsertDownload(resetItem)
+                notificationHelper.notifyDownloadState(resetItem, forceImmediate = true)
                 resetItem
             } ?: return@launch
 
@@ -282,6 +290,7 @@ class FastDownloadEngine(
                             speedBytesPerSec = 0L
                         )
                     )
+                    notificationHelper.cancel(downloadId)
                 }
             }
         }
@@ -305,6 +314,7 @@ class FastDownloadEngine(
                     }
                     repository.deleteDownloadById(downloadId)
                 }
+                notificationHelper.cancel(downloadId)
                 pausedFlags.remove(downloadId)
                 canceledFlags.remove(downloadId)
                 downloadUserAgents.remove(downloadId)
@@ -330,6 +340,7 @@ class FastDownloadEngine(
                     runCatching { file.delete() }
                 }
                 repository.clearAllDownloads()
+                notificationHelper.cancelAll()
                 pausedFlags.clear()
                 canceledFlags.clear()
                 downloadUserAgents.clear()
@@ -388,14 +399,14 @@ class FastDownloadEngine(
                                 latest.status != STATUS_CANCELED &&
                                 latest.status != STATUS_COMPLETED
                             ) {
-                                repository.upsertDownload(
-                                    latest.copy(
-                                        status = STATUS_FAILED,
-                                        speedBytesPerSec = 0L,
-                                        errorMessage = e.message?.takeIf { it.isNotBlank() }
-                                            ?: "Connection interrupted"
-                                    )
+                                val failedItem = latest.copy(
+                                    status = STATUS_FAILED,
+                                    speedBytesPerSec = 0L,
+                                    errorMessage = e.message?.takeIf { it.isNotBlank() }
+                                        ?: "Connection interrupted"
                                 )
+                                repository.upsertDownload(failedItem)
+                                notificationHelper.notifyDownloadState(failedItem, forceImmediate = true)
                             }
                         }
                     }
@@ -423,15 +434,15 @@ class FastDownloadEngine(
             val bestBytes = maxOf(latest.downloadedBytes, fallbackBytes, diskBytes).let { raw ->
                 if (resolvedTotal > 0L) raw.coerceAtMost(resolvedTotal) else raw
             }
-            repository.upsertDownload(
-                latest.copy(
-                    status = STATUS_PAUSED,
-                    downloadedBytes = bestBytes,
-                    totalBytes = resolvedTotal,
-                    speedBytesPerSec = 0L,
-                    errorMessage = null
-                )
+            val pausedItem = latest.copy(
+                status = STATUS_PAUSED,
+                downloadedBytes = bestBytes,
+                totalBytes = resolvedTotal,
+                speedBytesPerSec = 0L,
+                errorMessage = null
             )
+            repository.upsertDownload(pausedItem)
+            notificationHelper.notifyDownloadState(pausedItem, forceImmediate = true)
         }
     }
 
@@ -449,19 +460,19 @@ class FastDownloadEngine(
             if (pauseFlag.get() || cancelFlag.get()) return@withLock
             val latest = repository.getDownloadById(downloadId) ?: return@withLock
             if (latest.status != STATUS_DOWNLOADING) return@withLock
-            repository.upsertDownload(
-                latest.copy(
-                    downloadedBytes = if (totalBytes > 0L) {
-                        downloadedBytes.coerceAtMost(totalBytes)
-                    } else {
-                        downloadedBytes
-                    },
-                    totalBytes = totalBytes,
-                    speedBytesPerSec = speedBytesPerSec.coerceAtLeast(0L),
-                    chunksCount = chunksCount,
-                    status = STATUS_DOWNLOADING
-                )
+            val updatedItem = latest.copy(
+                downloadedBytes = if (totalBytes > 0L) {
+                    downloadedBytes.coerceAtMost(totalBytes)
+                } else {
+                    downloadedBytes
+                },
+                totalBytes = totalBytes,
+                speedBytesPerSec = speedBytesPerSec.coerceAtLeast(0L),
+                chunksCount = chunksCount,
+                status = STATUS_DOWNLOADING
             )
+            repository.upsertDownload(updatedItem)
+            notificationHelper.notifyDownloadState(updatedItem, forceImmediate = false)
         }
     }
 
@@ -489,31 +500,31 @@ class FastDownloadEngine(
         mutexFor(item.id).withLock {
             if (pauseFlag.get()) {
                 val latest = repository.getDownloadById(item.id) ?: item
-                repository.upsertDownload(
-                    latest.copy(
-                        totalBytes = total,
-                        downloadedBytes = total,
-                        speedBytesPerSec = 0L,
-                        chunksCount = 1,
-                        status = STATUS_PAUSED,
-                        localFilePath = targetFile.absolutePath
-                    )
+                val pausedItem = latest.copy(
+                    totalBytes = total,
+                    downloadedBytes = total,
+                    speedBytesPerSec = 0L,
+                    chunksCount = 1,
+                    status = STATUS_PAUSED,
+                    localFilePath = targetFile.absolutePath
                 )
+                repository.upsertDownload(pausedItem)
+                notificationHelper.notifyDownloadState(pausedItem, forceImmediate = true)
                 return@withLock
             }
             if (cancelFlag.get()) return@withLock
             val latest = repository.getDownloadById(item.id) ?: item
-            repository.upsertDownload(
-                latest.copy(
-                    totalBytes = total,
-                    downloadedBytes = total,
-                    speedBytesPerSec = total * 4L,
-                    chunksCount = 1,
-                    status = STATUS_COMPLETED,
-                    localFilePath = targetFile.absolutePath,
-                    completedAt = System.currentTimeMillis()
-                )
+            val completedItem = latest.copy(
+                totalBytes = total,
+                downloadedBytes = total,
+                speedBytesPerSec = total * 4L,
+                chunksCount = 1,
+                status = STATUS_COMPLETED,
+                localFilePath = targetFile.absolutePath,
+                completedAt = System.currentTimeMillis()
             )
+            repository.upsertDownload(completedItem)
+            notificationHelper.notifyDownloadState(completedItem, forceImmediate = true)
         }
     }
 
@@ -586,6 +597,7 @@ class FastDownloadEngine(
                 errorMessage = null
             )
             repository.upsertDownload(workingItem)
+            notificationHelper.notifyDownloadState(workingItem, forceImmediate = true)
             false
         }
         if (shouldAbort) {
@@ -720,17 +732,17 @@ class FastDownloadEngine(
         mutexFor(item.id).withLock {
             if (pauseFlag.get() || cancelFlag.get()) return@withLock
             val latest = repository.getDownloadById(item.id) ?: item
-            repository.upsertDownload(
-                latest.copy(
-                    downloadedBytes = totalBytes,
-                    totalBytes = totalBytes,
-                    speedBytesPerSec = avgSpeed,
-                    chunksCount = chunks,
-                    status = STATUS_COMPLETED,
-                    completedAt = System.currentTimeMillis(),
-                    errorMessage = null
-                )
+            val completedItem = latest.copy(
+                downloadedBytes = totalBytes,
+                totalBytes = totalBytes,
+                speedBytesPerSec = avgSpeed,
+                chunksCount = chunks,
+                status = STATUS_COMPLETED,
+                completedAt = System.currentTimeMillis(),
+                errorMessage = null
             )
+            repository.upsertDownload(completedItem)
+            notificationHelper.notifyDownloadState(completedItem, forceImmediate = true)
         }
     }
 
@@ -843,17 +855,17 @@ class FastDownloadEngine(
             mutexFor(item.id).withLock {
                 if (cancelFlag.get()) return@withLock
                 val latest = repository.getDownloadById(item.id) ?: item
-                repository.upsertDownload(
-                    latest.copy(
-                        downloadedBytes = totalBytes,
-                        totalBytes = totalBytes,
-                        speedBytesPerSec = 0L,
-                        chunksCount = 1,
-                        status = STATUS_COMPLETED,
-                        completedAt = System.currentTimeMillis(),
-                        errorMessage = null
-                    )
+                val completedItem = latest.copy(
+                    downloadedBytes = totalBytes,
+                    totalBytes = totalBytes,
+                    speedBytesPerSec = 0L,
+                    chunksCount = 1,
+                    status = STATUS_COMPLETED,
+                    completedAt = System.currentTimeMillis(),
+                    errorMessage = null
                 )
+                repository.upsertDownload(completedItem)
+                notificationHelper.notifyDownloadState(completedItem, forceImmediate = true)
             }
             return
         }
@@ -987,17 +999,17 @@ class FastDownloadEngine(
             mutexFor(item.id).withLock {
                 if (pauseFlag.get() || cancelFlag.get()) return@withLock
                 val latest = repository.getDownloadById(item.id) ?: item
-                repository.upsertDownload(
-                    latest.copy(
-                        downloadedBytes = downloaded,
-                        totalBytes = finalTotal,
-                        speedBytesPerSec = avgSpeed,
-                        chunksCount = 1,
-                        status = STATUS_COMPLETED,
-                        completedAt = System.currentTimeMillis(),
-                        errorMessage = null
-                    )
+                val completedItem = latest.copy(
+                    downloadedBytes = downloaded,
+                    totalBytes = finalTotal,
+                    speedBytesPerSec = avgSpeed,
+                    chunksCount = 1,
+                    status = STATUS_COMPLETED,
+                    completedAt = System.currentTimeMillis(),
+                    errorMessage = null
                 )
+                repository.upsertDownload(completedItem)
+                notificationHelper.notifyDownloadState(completedItem, forceImmediate = true)
             }
         } catch (e: IOException) {
             if (pauseFlag.get() && !cancelFlag.get()) {

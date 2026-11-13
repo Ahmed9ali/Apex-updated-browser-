@@ -257,7 +257,10 @@ fun DownloadsScreenOverlay(
                     ) {
                         Text(
                             text = stringResource(R.string.downloads_screen_title),
-                            style = EmphasizedTypography.headlineHero
+                            style = EmphasizedTypography.headlineHero,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
                         if (downloads.isNotEmpty()) {
                             Surface(
@@ -275,60 +278,58 @@ fun DownloadsScreenOverlay(
                     }
                 },
                 actions = {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        modifier = Modifier
-                            .padding(end = 8.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable(role = Role.Button) { showNewDownloadDialog = true }
-                            .testTag("downloads_new_url_button")
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.padding(end = 10.dp)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Add,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Text(
-                                text = stringResource(R.string.downloads_new_button),
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        }
-                    }
-
-                    if (downloads.isNotEmpty()) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f),
+                        Box(
+                            contentAlignment = Alignment.Center,
                             modifier = Modifier
-                                .padding(end = 12.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable(role = Role.Button) { showClearDialog = true }
-                                .testTag("downloads_clear_button")
+                                .minimumInteractiveComponentSize()
+                                .clip(CircleShape)
+                                .clickable(role = Role.Button) { showNewDownloadDialog = true }
+                                .testTag("downloads_new_url_button")
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp)
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.size(width = 48.dp, height = 38.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.CleaningServices,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onErrorContainer,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Text(
-                                    text = stringResource(R.string.downloads_clear_button),
-                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                                    color = MaterialTheme.colorScheme.onErrorContainer
-                                )
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Add,
+                                        contentDescription = stringResource(R.string.downloads_new_button),
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        if (downloads.isNotEmpty()) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .clip(CircleShape)
+                                    .clickable(role = Role.Button) { showClearDialog = true }
+                                    .testTag("downloads_clear_button")
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.88f),
+                                    modifier = Modifier.size(width = 48.dp, height = 38.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.CleaningServices,
+                                            contentDescription = stringResource(R.string.downloads_clear_button),
+                                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                                            modifier = Modifier.size(19.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }

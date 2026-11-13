@@ -277,6 +277,10 @@
     <string name="settings_default_browser_other_selected">Currently selected: %1$s</string>
     <string name="settings_default_browser_none_selected">No default browser selected • Tap to choose</string>
     <string name="settings_default_browser_badge_default">Default</string>
+
+    <!-- Download Status Bar Notifications -->
+    <string name="notification_channel_downloads_name">Downloads</string>
+    <string name="notification_channel_downloads_desc">Live progress and status for active and completed file downloads</string>
 </resources>
 
 

@@ -28,6 +28,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -42,7 +43,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -67,6 +67,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -77,6 +78,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.rotate
@@ -91,7 +93,6 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -108,7 +109,6 @@ import java.net.URLEncoder
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
-import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlinx.coroutines.delay
 import org.json.JSONObject
@@ -131,6 +131,7 @@ fun WebViewViewport(
     existingWebView: WebView?,
     onRegisterWebView: (String, WebView) -> Unit,
     onPageStarted: (String, String) -> Unit,
+    onUrlCommitted: (String, String) -> Unit = { _, _ -> },
     onProgressChanged: (String, Int) -> Unit,
     onPageFinished: (String, String?, String?, Boolean, Boolean) -> Unit,
     onSubresourceBlocked: (String, String, String, String, Long, Long) -> Unit,
@@ -165,11 +166,18 @@ fun WebViewViewport(
     val currentPreferences by rememberUpdatedState(preferences)
     val currentTab by rememberUpdatedState(tab)
     val currentOnRefreshPage by rememberUpdatedState(onRefreshPage)
+    val currentOnUrlCommitted by rememberUpdatedState(onUrlCommitted)
     val currentOnDownloadFile by rememberUpdatedState(onDownloadFile)
     val currentOnCredentialSubmitted by rememberUpdatedState(onCredentialSubmitted)
 
+    var lastAppliedScriptGuard by remember(tab.id) {
+        mutableStateOf(preferences.scriptGuardEnabled)
+    }
     var lastAppliedDesktopMode by remember(tab.id) {
         mutableStateOf(preferences.desktopViewportEnabled)
+    }
+    var lastAppliedPreload by remember(tab.id) {
+        mutableStateOf(preferences.aggressivePreloadEnabled)
     }
 
     // Long-press context popup & Preview page state
@@ -177,25 +185,46 @@ fun WebViewViewport(
     var previewTarget by remember(tab.id) { mutableStateOf<WebLongPressTarget?>(null) }
 
     // Material 3 Expressive Pull-to-Refresh state
-    val refreshTriggerPx = remember(density) { with(density) { 82.dp.toPx() } }
-    val maxPullPx = remember(density) { with(density) { 136.dp.toPx() } }
-    val restingRefreshOffsetPx = remember(density) { with(density) { 64.dp.toPx() } }
+    val refreshTriggerPx = remember(density) { with(density) { 64.dp.toPx() } }
+    val maxPullPx = remember(density) { with(density) { 120.dp.toPx() } }
+    val restingRefreshOffsetPx = remember(density) { with(density) { 68.dp.toPx() } }
     val touchSlopPx = remember(context) {
         ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     }
 
     var pullDistancePx by remember(tab.id) { mutableFloatStateOf(0f) }
+    var isActivelyPulling by remember(tab.id) { mutableStateOf(false) }
     var isRefreshing by remember(tab.id) { mutableStateOf(false) }
+    var refreshSawLoading by remember(tab.id) { mutableStateOf(false) }
     var refreshStartedAtMillis by remember(tab.id) { mutableLongStateOf(0L) }
 
     // Keep the expressive indicator spinning until page load finishes (with a minimum 650ms showcase spin)
     LaunchedEffect(isRefreshing, tab.isLoading) {
-        if (isRefreshing && !tab.isLoading) {
+        if (!isRefreshing) {
+            refreshSawLoading = false
+            return@LaunchedEffect
+        }
+        if (tab.isLoading) {
+            refreshSawLoading = true
+        } else {
+            if (!refreshSawLoading) {
+                delay(1200L)
+            }
             val elapsed = System.currentTimeMillis() - refreshStartedAtMillis
             val remaining = (650L - elapsed).coerceAtLeast(120L)
             delay(remaining)
             isRefreshing = false
             pullDistancePx = 0f
+            refreshSawLoading = false
+        }
+    }
+
+    LaunchedEffect(isRefreshing) {
+        if (isRefreshing) {
+            delay(10_000L)
+            isRefreshing = false
+            pullDistancePx = 0f
+            refreshSawLoading = false
         }
     }
 
@@ -212,6 +241,7 @@ fun WebViewViewport(
                 isIncognito = tab.isPrivate
             )
         }).apply {
+            overScrollMode = android.view.View.OVER_SCROLL_NEVER
             if (!tab.isPrivate) {
                 runCatching {
                     removeJavascriptInterface("ApexPasswordBridge")
@@ -237,140 +267,18 @@ fun WebViewViewport(
                     )
                 }
             }
-            var touchStartY = 0f
-            var touchStartX = 0f
             var lastTouchLocalX = 0f
             var lastTouchLocalY = 0f
-            var pullAnchorY = 0f
-            var canPullFromTop = false
-            var isPullingGesture = false
-            var isSendingSyntheticEvent = false
+            var midLoadGuardsAppliedForUrl: String? = null
 
-            setOnTouchListener { v, event ->
-                if (isSendingSyntheticEvent) return@setOnTouchListener false
-                val wv = v as? WebView ?: return@setOnTouchListener false
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        touchStartY = event.rawY
-                        touchStartX = event.rawX
-                        lastTouchLocalX = event.x
-                        lastTouchLocalY = event.y
-                        canPullFromTop = wv.scrollY <= 0 &&
-                            !wv.canScrollVertically(-1) &&
-                            !isRefreshing &&
-                            event.pointerCount == 1
-                        isPullingGesture = false
-                        wv.parent?.requestDisallowInterceptTouchEvent(true)
-                        false
-                    }
-
-                    MotionEvent.ACTION_POINTER_DOWN -> {
-                        // Pinch-to-zoom or multi-touch: never hijack for pull-to-refresh
-                        canPullFromTop = false
-                        if (isPullingGesture) {
-                            isPullingGesture = false
-                            pullDistancePx = 0f
-                        }
-                        false
-                    }
-
-                    MotionEvent.ACTION_MOVE -> {
-                        lastTouchLocalX = event.x
-                        lastTouchLocalY = event.y
-                        if (event.pointerCount > 1) {
-                            canPullFromTop = false
-                            isPullingGesture = false
-                            pullDistancePx = 0f
-                            return@setOnTouchListener false
-                        }
-
-                        if (!isPullingGesture && (wv.scrollY > 0 || wv.canScrollVertically(-1))) {
-                            canPullFromTop = false
-                            pullDistancePx = 0f
-                            false
-                        } else if (canPullFromTop && !isRefreshing) {
-                            val dy = event.rawY - touchStartY
-                            val dx = abs(event.rawX - touchStartX)
-
-                            // If user scrolls down at all, lock out pull-to-refresh for this gesture
-                            // so scrolling back up in the same drag won't stick.
-                            if (!isPullingGesture && dy < -touchSlopPx) {
-                                canPullFromTop = false
-                                return@setOnTouchListener false
-                            }
-
-                            if (!isPullingGesture &&
-                                dy > touchSlopPx * 2.4f &&
-                                dy > dx * 1.8f &&
-                                wv.scrollY <= 0 &&
-                                !wv.canScrollVertically(-1)
-                            ) {
-                                isPullingGesture = true
-                                pullAnchorY = event.rawY
-                                // Cleanly cancel WebView's active touch tracking so it doesn't stall
-                                isSendingSyntheticEvent = true
-                                val cancelEvent = MotionEvent.obtain(event).apply {
-                                    action = MotionEvent.ACTION_CANCEL
-                                }
-                                wv.onTouchEvent(cancelEvent)
-                                cancelEvent.recycle()
-                                isSendingSyntheticEvent = false
-                            }
-
-                            if (isPullingGesture) {
-                                val rawPull = event.rawY - pullAnchorY
-                                if (rawPull <= 0f) {
-                                    // User reversed direction to scroll down: hand touch back to WebView
-                                    isPullingGesture = false
-                                    canPullFromTop = false
-                                    pullDistancePx = 0f
-                                    isSendingSyntheticEvent = true
-                                    val downEvent = MotionEvent.obtain(event).apply {
-                                        action = MotionEvent.ACTION_DOWN
-                                    }
-                                    wv.onTouchEvent(downEvent)
-                                    downEvent.recycle()
-                                    isSendingSyntheticEvent = false
-                                    false
-                                } else {
-                                    pullDistancePx = (rawPull * 0.52f).coerceIn(0f, maxPullPx)
-                                    true
-                                }
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        }
-                    }
-
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        wv.parent?.requestDisallowInterceptTouchEvent(false)
-                        if (isPullingGesture) {
-                            isPullingGesture = false
-                            canPullFromTop = false
-                            if (pullDistancePx >= refreshTriggerPx) {
-                                isRefreshing = true
-                                refreshStartedAtMillis = System.currentTimeMillis()
-                                pullDistancePx = restingRefreshOffsetPx
-                                currentOnRefreshPage()
-                            } else {
-                                pullDistancePx = 0f
-                            }
-                            true
-                        } else {
-                            canPullFromTop = false
-                            false
-                        }
-                    }
-
-                    else -> false
-                }
+            setOnTouchListener { _, event ->
+                lastTouchLocalX = event.x
+                lastTouchLocalY = event.y
+                false
             }
 
             setOnLongClickListener { v ->
                 val wv = v as? WebView ?: return@setOnLongClickListener false
-                if (isPullingGesture) return@setOnLongClickListener false
 
                 val hitResult = wv.hitTestResult
                 if (hitResult.type == WebView.HitTestResult.EDIT_TEXT_TYPE) {
@@ -497,18 +405,22 @@ fun WebViewViewport(
                 }
 
                 override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                    if (view != null && newProgress in 15..90) {
-                        performanceOptimizer.installWebGlZeroCountGuard(
-                            view,
-                            currentPreferences.scriptGuardEnabled
-                        )
-                        if (currentPreferences.desktopViewportEnabled) {
-                            performanceOptimizer.applyDesktopViewportMode(view, true)
-                        }
-                        if (currentPreferences.shieldsEnabled) {
-                            val stealthScript = privacyManager.buildStealthAdblockScript(true)
-                            if (stealthScript.isNotEmpty()) {
-                                view.evaluateJavascript(stealthScript, null)
+                    if (view != null && newProgress >= 25) {
+                        val activeUrl = view.url.orEmpty()
+                        if (midLoadGuardsAppliedForUrl != activeUrl) {
+                            midLoadGuardsAppliedForUrl = activeUrl
+                            performanceOptimizer.installWebGlZeroCountGuard(
+                                view,
+                                currentPreferences.scriptGuardEnabled
+                            )
+                            if (currentPreferences.desktopViewportEnabled) {
+                                performanceOptimizer.applyDesktopViewportMode(view, true)
+                            }
+                            if (currentPreferences.shieldsEnabled) {
+                                val stealthScript = privacyManager.buildStealthAdblockScript(true)
+                                if (stealthScript.isNotEmpty()) {
+                                    view.evaluateJavascript(stealthScript, null)
+                                }
                             }
                         }
                     }
@@ -604,15 +516,15 @@ fun WebViewViewport(
 
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     super.onPageStarted(view, url, favicon)
+                    midLoadGuardsAppliedForUrl = null
                     if (view != null) {
                         performanceOptimizer.installWebGlZeroCountGuard(
                             view,
                             currentPreferences.scriptGuardEnabled
                         )
-                        performanceOptimizer.applyDesktopViewportMode(
-                            view,
-                            currentPreferences.desktopViewportEnabled
-                        )
+                        if (currentPreferences.desktopViewportEnabled) {
+                            performanceOptimizer.applyDesktopViewportMode(view, true)
+                        }
                         if (currentPreferences.shieldsEnabled) {
                             val stealthScript = privacyManager.buildStealthAdblockScript(true)
                             if (stealthScript.isNotEmpty()) {
@@ -628,7 +540,11 @@ fun WebViewViewport(
                 override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
                     super.doUpdateVisitedHistory(view, url, isReload)
                     if (!url.isNullOrBlank() && !url.startsWith("data:")) {
-                        onPageStarted(currentTab.id, url)
+                        if (isReload) {
+                            onPageStarted(currentTab.id, url)
+                        } else {
+                            currentOnUrlCommitted(currentTab.id, url)
+                        }
                     }
                 }
 
@@ -655,10 +571,9 @@ fun WebViewViewport(
                         view,
                         currentPreferences.scriptGuardEnabled
                     )
-                    performanceOptimizer.applyDesktopViewportMode(
-                        view,
-                        currentPreferences.desktopViewportEnabled
-                    )
+                    if (currentPreferences.desktopViewportEnabled) {
+                        performanceOptimizer.applyDesktopViewportMode(view, true)
+                    }
                     if (currentPreferences.shieldsEnabled) {
                         val stealthScript = privacyManager.buildStealthAdblockScript(true)
                         if (stealthScript.isNotEmpty()) {
@@ -735,14 +650,22 @@ fun WebViewViewport(
         preferences.desktopViewportEnabled,
         preferences.aggressivePreloadEnabled
     ) {
+        val scriptGuardChanged = lastAppliedScriptGuard != preferences.scriptGuardEnabled
         val desktopModeChanged = lastAppliedDesktopMode != preferences.desktopViewportEnabled
+        val preloadChanged = lastAppliedPreload != preferences.aggressivePreloadEnabled
+        if (!scriptGuardChanged && !desktopModeChanged && !preloadChanged) {
+            return@LaunchedEffect
+        }
+        lastAppliedScriptGuard = preferences.scriptGuardEnabled
         lastAppliedDesktopMode = preferences.desktopViewportEnabled
+        lastAppliedPreload = preferences.aggressivePreloadEnabled
 
         performanceOptimizer.configureFastWebView(
             webView = webView,
             scriptGuardEnabled = preferences.scriptGuardEnabled,
             desktopMode = preferences.desktopViewportEnabled,
-            aggressiveCaching = preferences.aggressivePreloadEnabled
+            aggressiveCaching = preferences.aggressivePreloadEnabled,
+            isIncognito = tab.isPrivate
         )
         performanceOptimizer.applyDesktopViewportMode(
             webView = webView,
@@ -797,33 +720,86 @@ fun WebViewViewport(
         }
     }
 
+    val pullContainer = remember(tab.id, webView, touchSlopPx, maxPullPx) {
+        PullToRefreshWebViewContainer(
+            context = context,
+            webView = webView,
+            touchSlopPx = touchSlopPx,
+            maxPullPx = maxPullPx
+        )
+    }
+
     val targetOffsetPx = if (isRefreshing) restingRefreshOffsetPx else pullDistancePx
-    val animatedPullOffsetPx by animateFloatAsState(
+    val animatedPullOffsetState = animateFloatAsState(
         targetValue = targetOffsetPx,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        ),
+        animationSpec = if (isActivelyPulling) {
+            snap()
+        } else {
+            spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            )
+        },
         label = "ExpressivePullToRefreshOffset"
     )
-    val pullProgress = (animatedPullOffsetPx / refreshTriggerPx).coerceIn(0f, 1.25f)
+    val showPullIndicator by remember(tab.id) {
+        derivedStateOf { isRefreshing || pullDistancePx > 1f || animatedPullOffsetState.value > 1f }
+    }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    Box(modifier = modifier.fillMaxSize().clipToBounds()) {
         AndroidView(
-            factory = { webView },
-            update = { view ->
-                onRegisterWebView(tab.id, view)
+            factory = {
+                pullContainer.apply {
+                    isRefreshingProvider = { isRefreshing }
+                    onPullProgress = { distancePx, activelyPulling ->
+                        isActivelyPulling = activelyPulling
+                        pullDistancePx = distancePx
+                    }
+                    onPullReleased = { releasedDistancePx ->
+                        isActivelyPulling = false
+                        if (releasedDistancePx >= refreshTriggerPx) {
+                            isRefreshing = true
+                            refreshSawLoading = currentTab.isLoading
+                            refreshStartedAtMillis = System.currentTimeMillis()
+                            pullDistancePx = restingRefreshOffsetPx
+                            currentOnRefreshPage()
+                        } else {
+                            pullDistancePx = 0f
+                        }
+                    }
+                }
+            },
+            update = { container ->
+                container.isRefreshingProvider = { isRefreshing }
+                container.onPullProgress = { distancePx, activelyPulling ->
+                    isActivelyPulling = activelyPulling
+                    pullDistancePx = distancePx
+                }
+                container.onPullReleased = { releasedDistancePx ->
+                    isActivelyPulling = false
+                    if (releasedDistancePx >= refreshTriggerPx) {
+                        isRefreshing = true
+                        refreshSawLoading = currentTab.isLoading
+                        refreshStartedAtMillis = System.currentTimeMillis()
+                        pullDistancePx = restingRefreshOffsetPx
+                        currentOnRefreshPage()
+                    } else {
+                        pullDistancePx = 0f
+                    }
+                }
+                onRegisterWebView(tab.id, container.webView)
             },
             modifier = Modifier
                 .fillMaxSize()
                 .testTag("browser_webview_${tab.id}")
         )
 
-        if (animatedPullOffsetPx > 2f || isRefreshing) {
+        if (showPullIndicator) {
             Material3ExpressivePullToRefreshIndicator(
-                pullProgress = pullProgress,
+                pullProgressProvider = { (animatedPullOffsetState.value / refreshTriggerPx).coerceIn(0f, 1.25f) },
                 isRefreshing = isRefreshing,
-                offsetY = animatedPullOffsetPx,
+                isTriggered = isRefreshing || pullDistancePx >= refreshTriggerPx,
+                offsetYProvider = { animatedPullOffsetState.value },
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .zIndex(20f)
@@ -907,6 +883,183 @@ fun WebViewViewport(
             },
             onDismiss = { previewTarget = null }
         )
+    }
+}
+
+private class PullToRefreshWebViewContainer(
+    context: Context,
+    val webView: WebView,
+    private val touchSlopPx: Float,
+    private val maxPullPx: Float
+) : android.widget.FrameLayout(context) {
+    var isRefreshingProvider: () -> Boolean = { false }
+    var onPullProgress: (distancePx: Float, activelyPulling: Boolean) -> Unit = { _, _ -> }
+    var onPullReleased: (distancePx: Float) -> Unit = { _ -> }
+
+    private var startY = 0f
+    private var startX = 0f
+    private var pullAnchorY = 0f
+    private var canPullFromTop = false
+    private var isPullingGesture = false
+    private var currentPullDistancePx = 0f
+
+    init {
+        (webView.parent as? ViewGroup)?.removeView(webView)
+        addView(
+            webView,
+            LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+        )
+    }
+
+    private fun isAtTop(): Boolean {
+        return webView.scrollY <= 0 && !webView.canScrollVertically(-1)
+    }
+
+    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                startY = ev.y
+                startX = ev.x
+                isPullingGesture = false
+                currentPullDistancePx = 0f
+                canPullFromTop = isAtTop() && !isRefreshingProvider() && ev.pointerCount == 1
+                parent?.requestDisallowInterceptTouchEvent(true)
+                return false
+            }
+
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                canPullFromTop = false
+                if (isPullingGesture) {
+                    isPullingGesture = false
+                    currentPullDistancePx = 0f
+                    onPullProgress(0f, false)
+                }
+                return false
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                if (ev.pointerCount > 1 || isRefreshingProvider()) {
+                    canPullFromTop = false
+                    return false
+                }
+                if (!isAtTop()) {
+                    canPullFromTop = false
+                    return false
+                }
+                if (!canPullFromTop) return false
+
+                val dy = ev.y - startY
+                val dx = abs(ev.x - startX)
+                if (dy < -touchSlopPx * 0.6f) {
+                    canPullFromTop = false
+                    return false
+                }
+                if (dy > touchSlopPx * 0.9f && dy > dx * 1.15f) {
+                    isPullingGesture = true
+                    pullAnchorY = ev.y - (touchSlopPx * 0.4f)
+                    currentPullDistancePx = ((ev.y - pullAnchorY) * 0.68f).coerceIn(0f, maxPullPx)
+                    onPullProgress(currentPullDistancePx, true)
+                    return true
+                }
+                return false
+            }
+
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+                canPullFromTop = false
+                return false
+            }
+        }
+        return false
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    override fun onTouchEvent(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                startY = ev.y
+                startX = ev.x
+                isPullingGesture = false
+                currentPullDistancePx = 0f
+                canPullFromTop = isAtTop() && !isRefreshingProvider() && ev.pointerCount == 1
+                parent?.requestDisallowInterceptTouchEvent(true)
+                return canPullFromTop
+            }
+
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                canPullFromTop = false
+                if (isPullingGesture) {
+                    isPullingGesture = false
+                    currentPullDistancePx = 0f
+                    onPullProgress(0f, false)
+                }
+                return false
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                if (ev.pointerCount > 1 || isRefreshingProvider()) {
+                    canPullFromTop = false
+                    if (isPullingGesture) {
+                        isPullingGesture = false
+                        currentPullDistancePx = 0f
+                        onPullProgress(0f, false)
+                    }
+                    return false
+                }
+                if (!isPullingGesture) {
+                    if (!canPullFromTop || !isAtTop()) return false
+                    val dy = ev.y - startY
+                    val dx = abs(ev.x - startX)
+                    if (dy < -touchSlopPx * 0.6f) {
+                        canPullFromTop = false
+                        return false
+                    }
+                    if (dy > touchSlopPx * 0.9f && dy > dx * 1.15f) {
+                        isPullingGesture = true
+                        pullAnchorY = ev.y - (touchSlopPx * 0.4f)
+                    } else {
+                        return true
+                    }
+                }
+                val rawPull = ev.y - pullAnchorY
+                if (rawPull <= 0f) {
+                    currentPullDistancePx = 0f
+                    onPullProgress(0f, true)
+                } else {
+                    currentPullDistancePx = (rawPull * 0.68f).coerceIn(0f, maxPullPx)
+                    onPullProgress(currentPullDistancePx, true)
+                }
+                return true
+            }
+
+            MotionEvent.ACTION_UP -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+                if (isPullingGesture) {
+                    val releasedDistance = currentPullDistancePx
+                    isPullingGesture = false
+                    canPullFromTop = false
+                    currentPullDistancePx = 0f
+                    onPullReleased(releasedDistance)
+                    return true
+                }
+                canPullFromTop = false
+                return false
+            }
+
+            MotionEvent.ACTION_CANCEL -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+                if (isPullingGesture) {
+                    isPullingGesture = false
+                    canPullFromTop = false
+                    currentPullDistancePx = 0f
+                    onPullProgress(0f, false)
+                    return true
+                }
+                canPullFromTop = false
+                return false
+            }
+        }
+        return super.onTouchEvent(ev)
     }
 }
 
@@ -1404,16 +1557,17 @@ private fun enqueueLinkDownload(context: Context, url: String, title: String) {
  */
 @Composable
 fun Material3ExpressivePullToRefreshIndicator(
-    pullProgress: Float,
+    pullProgressProvider: () -> Float,
     isRefreshing: Boolean,
-    offsetY: Float,
+    isTriggered: Boolean,
+    offsetYProvider: () -> Float,
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
-    val startHiddenPx = remember(density) { with(density) { -52.dp.toPx() } }
+    val startHiddenPx = remember(density) { with(density) { -48.dp.toPx() } }
 
     val infiniteTransition = rememberInfiniteTransition(label = "M3ExpressiveLoadingIndicator")
-    val spinAngle by infiniteTransition.animateFloat(
+    val spinAngleState = infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 360f,
         animationSpec = infiniteRepeatable(
@@ -1422,7 +1576,7 @@ fun Material3ExpressivePullToRefreshIndicator(
         ),
         label = "ExpressiveSpinAngle"
     )
-    val morphPhase by infiniteTransition.animateFloat(
+    val morphPhaseState = infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 5f,
         animationSpec = infiniteRepeatable(
@@ -1432,8 +1586,8 @@ fun Material3ExpressivePullToRefreshIndicator(
         label = "ExpressiveShapeMorphPhase"
     )
 
-    val containerScale by animateFloatAsState(
-        targetValue = if (isRefreshing) 1f else (pullProgress * 1.05f).coerceIn(0.35f, 1.08f),
+    val containerScaleState = animateFloatAsState(
+        targetValue = if (isRefreshing) 1f else if (isTriggered) 1.06f else 0.94f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessMedium
@@ -1441,24 +1595,12 @@ fun Material3ExpressivePullToRefreshIndicator(
         label = "ExpressiveContainerScale"
     )
 
-    val activePhase = if (isRefreshing) {
-        morphPhase
-    } else {
-        (pullProgress * 2.5f).coerceIn(0f, 4.99f)
-    }
-
-    val effectiveRotation = if (isRefreshing) {
-        spinAngle + (morphPhase * 72f)
-    } else {
-        pullProgress * 220f
-    }
-
-    val containerColor = if (isRefreshing || pullProgress >= 1f) {
+    val containerColor = if (isRefreshing || isTriggered) {
         MaterialTheme.colorScheme.primaryContainer
     } else {
         MaterialTheme.colorScheme.surfaceContainerHighest
     }
-    val innerShapeColor = if (isRefreshing || pullProgress >= 1f) {
+    val innerShapeColor = if (isRefreshing || isTriggered) {
         MaterialTheme.colorScheme.primary
     } else {
         MaterialTheme.colorScheme.onSurfaceVariant
@@ -1473,20 +1615,21 @@ fun Material3ExpressivePullToRefreshIndicator(
         shadowElevation = 6.dp,
         border = BorderStroke(
             width = 1.dp,
-            color = MaterialTheme.colorScheme.primary.copy(alpha = if (isRefreshing || pullProgress >= 1f) 0.28f else 0.14f)
+            color = MaterialTheme.colorScheme.primary.copy(alpha = if (isRefreshing || isTriggered) 0.28f else 0.14f)
         ),
         modifier = modifier
-            .offset {
-                IntOffset(
-                    x = 0,
-                    y = (startHiddenPx + offsetY).roundToInt()
-                )
-            }
             .size(48.dp)
             .graphicsLayer {
-                scaleX = containerScale
-                scaleY = containerScale
-                alpha = if (isRefreshing) 1f else (pullProgress * 1.35f).coerceIn(0f, 1f)
+                val progress = pullProgressProvider()
+                val scale = if (isRefreshing) {
+                    containerScaleState.value
+                } else {
+                    (progress * 0.65f + 0.40f).coerceIn(0.40f, 1.08f)
+                }
+                translationY = startHiddenPx + offsetYProvider()
+                scaleX = scale
+                scaleY = scale
+                alpha = if (isRefreshing) 1f else (progress * 1.45f).coerceIn(0f, 1f)
             }
             .testTag("expressive_pull_to_refresh_indicator")
     ) {
@@ -1495,6 +1638,17 @@ fun Material3ExpressivePullToRefreshIndicator(
                 val cx = size.width / 2f
                 val cy = size.height / 2f
                 val maxRadius = size.minDimension / 2f
+
+                val activePhase = if (isRefreshing) {
+                    morphPhaseState.value
+                } else {
+                    (pullProgressProvider() * 2.5f).coerceIn(0f, 4.99f)
+                }
+                val effectiveRotation = if (isRefreshing) {
+                    spinAngleState.value + (morphPhaseState.value * 72f)
+                } else {
+                    pullProgressProvider() * 220f
+                }
 
                 val shapeIndex = activePhase.toInt() % 5
                 val nextShapeIndex = (shapeIndex + 1) % 5

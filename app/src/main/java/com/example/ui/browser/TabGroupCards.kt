@@ -68,7 +68,6 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -234,7 +233,7 @@ internal fun SingleTabGridCard(
     val borderColor = when {
         isDropTarget -> MaterialTheme.colorScheme.tertiary
         customTabPalette != null && isSelected -> customTabPalette.accent
-        isSelected -> Color(0xFFFF5500) // Signature Brave highlight orange on edges
+        isSelected -> MaterialTheme.colorScheme.primary
         customTabPalette != null -> customTabPalette.border.copy(alpha = 0.7f)
         else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
     }

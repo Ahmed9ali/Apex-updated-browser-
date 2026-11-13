@@ -69,8 +69,6 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.FloatingToolbarDefaults
-import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -369,7 +367,9 @@ fun PasswordManagerScreenOverlay(
         ) {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .navigationBarsPadding()
             ) {
                 // Material 3 Expressive Connected ToggleButton Switcher
                 Row(
@@ -478,60 +478,6 @@ fun PasswordManagerScreenOverlay(
                             onInspectItem = { inspectedEntity = it }
                         )
                     }
-                }
-            }
-
-            // Material 3 Expressive HorizontalFloatingToolbar docked at the bottom
-            HorizontalFloatingToolbar(
-                expanded = true,
-                floatingActionButton = {
-                    FloatingToolbarDefaults.StandardFloatingActionButton(
-                        onClick = {
-                            editingEntity = null
-                            editorInitialPassword = SecurePasswordGenerator.generateRandom(length = 16)
-                            showEditorSheet = true
-                        },
-                        modifier = Modifier.testTag("passwords_floating_add_fab")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Add,
-                            contentDescription = stringResource(R.string.passwords_add_button)
-                        )
-                    }
-                },
-                colors = FloatingToolbarDefaults.vibrantFloatingToolbarColors(),
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .padding(bottom = 14.dp)
-                    .testTag("passwords_floating_toolbar")
-            ) {
-                IconButton(
-                    onClick = { activeSection = PasswordManagerTab.VAULT },
-                    modifier = Modifier.testTag("toolbar_vault_btn")
-                ) {
-                    Icon(
-                        imageVector = if (activeSection == PasswordManagerTab.VAULT) Icons.Filled.Key else Icons.Outlined.Key,
-                        contentDescription = stringResource(R.string.passwords_tab_vault)
-                    )
-                }
-                IconButton(
-                    onClick = { activeSection = PasswordManagerTab.GENERATOR },
-                    modifier = Modifier.testTag("toolbar_generator_btn")
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.AutoAwesome,
-                        contentDescription = stringResource(R.string.passwords_tab_generator)
-                    )
-                }
-                IconButton(
-                    onClick = { activeSection = PasswordManagerTab.AUDIT },
-                    modifier = Modifier.testTag("toolbar_audit_btn")
-                ) {
-                    Icon(
-                        imageVector = if (activeSection == PasswordManagerTab.AUDIT) Icons.Filled.Shield else Icons.Outlined.Shield,
-                        contentDescription = stringResource(R.string.passwords_tab_audit)
-                    )
                 }
             }
         }
@@ -658,7 +604,7 @@ private fun VaultSectionContent(
         modifier = Modifier.fillMaxSize()
     ) {
         LazyColumn(
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 112.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
             modifier = Modifier
                 .fillMaxSize()
@@ -1271,7 +1217,7 @@ private fun GeneratorSectionContent(
         modifier = Modifier.fillMaxSize()
     ) {
         LazyColumn(
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 112.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
             modifier = Modifier
                 .fillMaxSize()
@@ -1568,7 +1514,7 @@ private fun AuditSectionContent(
         modifier = Modifier.fillMaxSize()
     ) {
         LazyColumn(
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 112.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
             modifier = Modifier
                 .fillMaxSize()

@@ -22,6 +22,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.down
 import androidx.compose.ui.test.moveBy
 import androidx.compose.ui.test.swipe
+import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.test.swipeRight
 import androidx.compose.ui.test.up
@@ -35,10 +36,12 @@ import com.example.ui.browser.CompactTopToolbar
 import com.example.ui.browser.DraggableTabGridOverlay
 import com.example.ui.browser.GroupedListSpacing
 import com.example.ui.browser.SettingsScreenOverlay
+import com.example.ui.browser.WebViewViewport
 import com.example.ui.browser.groupedListItemShape
 import com.example.data.preferences.BrowserPreferences
 import com.example.engine.DefaultBrowserHelper
 import com.example.engine.DefaultBrowserStatus
+import com.example.engine.PerformanceOptimizer
 import com.example.ui.theme.ApexBrowserTheme
 import com.example.ui.theme.ApexColorSchemeBuilder
 import com.example.ui.theme.SeedPalettePreset
@@ -861,6 +864,18 @@ class ExampleRobolectricTest {
         }
 
         composeTestRule.onNodeWithTag("password_manager_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("passwords_split_add_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("passwords_mode_vault").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("passwords_mode_generator").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("passwords_mode_audit").assertIsDisplayed()
+
+        // Bottom floating toolbar should not exist; controls live at the top
+        composeTestRule.onNodeWithTag("passwords_floating_toolbar").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("toolbar_vault_btn").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("toolbar_generator_btn").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("toolbar_audit_btn").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("passwords_floating_add_fab").assertDoesNotExist()
+
         composeTestRule.onNodeWithTag("passwords_vault_list").performScrollToIndex(2)
         composeTestRule.onNodeWithText("Figma").assertIsDisplayed()
         composeTestRule.onNodeWithText("designer@studio.io").assertIsDisplayed()
@@ -1252,6 +1267,287 @@ class ExampleRobolectricTest {
 
         db.close()
     }
+
+    @Test
+    fun `verify reloadActiveTab sets loading synchronously and onWebViewUrlCommitted avoids loading flicker`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, ApexDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val sharedPrefs = context.getSharedPreferences("test_reload_sync_prefs", Context.MODE_PRIVATE)
+        val prefsRepo = UserPreferencesRepository(context)
+        val repository = BrowserRepository(db.apexDao(), prefsRepo, sharedPrefs)
+        val store = androidx.lifecycle.ViewModelStore()
+        val viewModel = androidx.lifecycle.ViewModelProvider(
+            store,
+            object : androidx.lifecycle.ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
+                    return BrowserViewModel(repository) as T
+                }
+            }
+        )[BrowserViewModel::class.java]
+
+        try {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            viewModel.submitNavigation("https://example.com")
+            val tabId = viewModel.uiState.value.activeTabId
+            viewModel.onWebViewPageFinished(
+                tabId = tabId,
+                title = "Example",
+                url = "https://example.com",
+                canGoBack = false,
+                canGoForward = false
+            )
+            assertFalse(viewModel.uiState.value.activeTab.isLoading)
+
+            // SPA history/anchor commit updates URL without flashing isLoading = true
+            viewModel.onWebViewUrlCommitted(tabId, "https://example.com/#section")
+            assertEquals("https://example.com/#section", viewModel.uiState.value.activeTab.url)
+            assertFalse(viewModel.uiState.value.activeTab.isLoading)
+
+            // reloadActiveTab immediately marks tab as loading so pull-to-refresh does not cancel early
+            viewModel.reloadActiveTab()
+            assertTrue(viewModel.uiState.value.activeTab.isLoading)
+            assertTrue(viewModel.uiState.value.activeTab.progress > 0f)
+        } finally {
+            store.clear()
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            kotlinx.coroutines.delay(50)
+            db.close()
+        }
+    }
+
+    @Test
+    fun `verify WebViewViewport downward pull from top reveals expressive indicator and triggers refresh`() {
+        var tab by mutableStateOf(
+            BrowserTab(
+                id = "ptr_tab_1",
+                title = "Example",
+                url = "https://example.com",
+                isLoading = false,
+                progress = 1f
+            )
+        )
+        var refreshCount by mutableIntStateOf(0)
+        val privacyManager = PrivacyManager()
+        val performanceOptimizer = PerformanceOptimizer()
+
+        composeTestRule.setContent {
+            ApexBrowserTheme {
+                WebViewViewport(
+                    tab = tab,
+                    preferences = BrowserPreferences(),
+                    privacyManager = privacyManager,
+                    performanceOptimizer = performanceOptimizer,
+                    existingWebView = null,
+                    onRegisterWebView = { _, _ -> },
+                    onPageStarted = { _, _ -> },
+                    onProgressChanged = { _, _ -> },
+                    onPageFinished = { _, _, _, _, _ -> },
+                    onSubresourceBlocked = { _, _, _, _, _, _ -> },
+                    onHttpsUpgradeTriggered = {},
+                    onScrollDelta = {},
+                    onRefreshPage = {
+                        refreshCount += 1
+                        tab = tab.copy(isLoading = true, progress = 0.08f)
+                    }
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // Pull down on the WebView from top (scrollY == 0)
+        composeTestRule.onNodeWithTag("browser_webview_ptr_tab_1").performTouchInput {
+            swipeDown(
+                startY = top + 40f,
+                endY = top + 420f,
+                durationMillis = 250
+            )
+        }
+        composeTestRule.waitForIdle()
+
+        assertEquals(1, refreshCount)
+        composeTestRule.onNodeWithTag("expressive_pull_to_refresh_indicator").assertIsDisplayed()
+    }
+
+    @Test
+    fun `verify Brave Search is default search engine in preferences and repository init`() = runBlocking {
+        assertEquals(SearchEngineOption.BRAVE, BrowserPreferences().searchEngine)
+        assertEquals(SearchEngineOption.BRAVE, SearchEngineOption.fromId(null))
+        assertEquals(SearchEngineOption.BRAVE, SearchEngineOption.fromId("unknown"))
+
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, ApexDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val sharedPrefs = context.getSharedPreferences("test_brave_default_prefs", Context.MODE_PRIVATE)
+        sharedPrefs.edit().clear().commit()
+        val prefsRepo = UserPreferencesRepository(context)
+        val repository = BrowserRepository(db.apexDao(), prefsRepo, sharedPrefs)
+
+        try {
+            assertEquals(SearchEngineOption.BRAVE, prefsRepo.preferencesFlow.first().searchEngine)
+
+            // Simulate an older install that had DuckDuckGo before the Brave default migration ran
+            prefsRepo.setSearchEngine(SearchEngineOption.DUCKDUCKGO)
+            repository.ensureFreshInitialized()
+
+            assertEquals(SearchEngineOption.BRAVE, prefsRepo.preferencesFlow.first().searchEngine)
+            assertTrue(sharedPrefs.getBoolean("reset_default_search_engine_brave_v1", false))
+        } finally {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            db.close()
+        }
+    }
+
+    @Test
+    fun `verify DownloadsScreenOverlay app bar uses icon-only pill buttons on right side`() {
+        val sampleDownload = com.example.data.local.DownloadItemEntity(
+            id = 42L,
+            fileName = "archive.zip",
+            url = "https://example.com/archive.zip",
+            mimeType = "application/zip",
+            category = "Archive",
+            totalBytes = 2048L,
+            downloadedBytes = 1024L,
+            speedBytesPerSec = 512L,
+            chunksCount = 4,
+            status = FastDownloadEngine.STATUS_DOWNLOADING,
+            localFilePath = "/tmp/archive.zip",
+            createdAt = System.currentTimeMillis()
+        )
+
+        composeTestRule.setContent {
+            ApexBrowserTheme {
+                com.example.ui.browser.DownloadsScreenOverlay(
+                    downloads = listOf(sampleDownload),
+                    onStartNewDownload = { _, _ -> },
+                    onPauseDownload = {},
+                    onResumeDownload = {},
+                    onRetryDownload = {},
+                    onCancelDownload = {},
+                    onDeleteDownload = {},
+                    onClearCompletedDownloads = {},
+                    onClearAllDownloads = {},
+                    onOpenUrlInBrowser = {},
+                    onDismiss = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("Downloads").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("downloads_new_url_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("downloads_clear_button").assertIsDisplayed()
+
+        // App bar buttons must be icon-only pills with no inline "New Download" / "Clear" text
+        composeTestRule.onNodeWithText("New Download").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Clear").assertDoesNotExist()
+
+        composeTestRule.onNodeWithTag("downloads_new_url_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Start Fast Download").assertIsDisplayed()
+    }
+
+    @Test
+    fun `verify DownloadNotificationHelper shows progress in status bar notification and clears on completion`() {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        Shadows.shadowOf(app).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val helper = com.example.engine.DownloadNotificationHelper(app)
+        val notificationManager = app.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        val shadowNotificationManager = Shadows.shadowOf(notificationManager)
+
+        val downloadId = 77L
+        val downloadingItem = com.example.data.local.DownloadItemEntity(
+            id = downloadId,
+            fileName = "ubuntu.iso",
+            url = "https://example.com/ubuntu.iso",
+            mimeType = "application/octet-stream",
+            category = "Other",
+            totalBytes = 100_000_000L,
+            downloadedBytes = 50_000_000L,
+            speedBytesPerSec = 5_000_000L,
+            chunksCount = 4,
+            status = FastDownloadEngine.STATUS_DOWNLOADING,
+            localFilePath = "/tmp/ubuntu.iso",
+            createdAt = System.currentTimeMillis()
+        )
+
+        helper.notifyDownloadState(downloadingItem, forceImmediate = true)
+
+        val notifId = com.example.engine.DownloadNotificationHelper.notificationIdFor(downloadId)
+        val activeNotif = shadowNotificationManager.getNotification(notifId)
+        assertNotNull(activeNotif)
+        assertTrue((activeNotif.flags and android.app.Notification.FLAG_ONGOING_EVENT) != 0)
+        assertEquals(50, activeNotif.extras.getInt(android.app.Notification.EXTRA_PROGRESS))
+        assertEquals(100, activeNotif.extras.getInt(android.app.Notification.EXTRA_PROGRESS_MAX))
+
+        val completedItem = downloadingItem.copy(
+            downloadedBytes = 100_000_000L,
+            status = FastDownloadEngine.STATUS_COMPLETED,
+            completedAt = System.currentTimeMillis()
+        )
+        helper.notifyDownloadState(completedItem, forceImmediate = true)
+
+        val completedNotif = shadowNotificationManager.getNotification(notifId)
+        assertNotNull(completedNotif)
+        assertTrue((completedNotif.flags and android.app.Notification.FLAG_ONGOING_EVENT) == 0)
+        assertEquals(0, completedNotif.extras.getInt(android.app.Notification.EXTRA_PROGRESS_MAX))
+
+        helper.cancel(downloadId)
+        assertNull(shadowNotificationManager.getNotification(notifId))
+    }
+
+    @Test
+    fun `verify active tab grid card renders cleanly under selected theme palette`() {
+        val activeTab = BrowserTab(
+            id = "tab_theme_active",
+            title = "Brave Search",
+            url = "https://search.brave.com",
+            isLoading = false
+        )
+        val inactiveTab = BrowserTab(
+            id = "tab_theme_inactive",
+            title = "Home",
+            url = "apex://home",
+            isLoading = false
+        )
+
+        composeTestRule.setContent {
+            ApexBrowserTheme(
+                dynamicColor = false,
+                seedPreset = SeedPalettePreset.CYBER_EMERALD
+            ) {
+                DraggableTabGridOverlay(
+                    gridEntries = listOf(
+                        TabGridEntry.SingleTab(activeTab),
+                        TabGridEntry.SingleTab(inactiveTab)
+                    ),
+                    totalOpenTabs = 2,
+                    activeTabId = activeTab.id,
+                    expandedGroupId = null,
+                    onSelectTab = {},
+                    onCloseTab = {},
+                    onCloseGroup = {},
+                    onEditGroup = {},
+                    onMergeEntries = { _, _ -> },
+                    onMoveGroupedTabToTarget = { _, _ -> },
+                    onOpenGroup = {},
+                    onAddTabToGroup = {},
+                    onUngroupTab = {},
+                    onCycleTabColor = {},
+                    onNewTab = {},
+                    onCreateGroup = {},
+                    onResetAllTabs = {},
+                    onDismiss = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("grid_tab_card_tab_theme_active").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("grid_tab_card_tab_theme_inactive").assertIsDisplayed()
+    }
 }
-
-

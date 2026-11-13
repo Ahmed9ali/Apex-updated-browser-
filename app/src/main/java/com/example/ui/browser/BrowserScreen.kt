@@ -1,8 +1,12 @@
 package com.example.ui.browser
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -67,6 +71,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -116,6 +121,23 @@ fun BrowserScreen(
         defaultBrowserStatus = DefaultBrowserHelper.getStatus(context)
     }
 
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    val requestNotificationPermissionIfNeeded = remember(context) {
+        {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+
     DisposableEffect(lifecycleOwner, context) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
@@ -129,7 +151,9 @@ fun BrowserScreen(
     }
 
     LaunchedEffect(uiState.isMenuSheetOpen, uiState.isSettingsScreenOpen) {
-        defaultBrowserStatus = DefaultBrowserHelper.getStatus(context)
+        if (uiState.isMenuSheetOpen || uiState.isSettingsScreenOpen) {
+            defaultBrowserStatus = DefaultBrowserHelper.getStatus(context)
+        }
     }
 
     val isWideScreen = windowSizeClass.widthSizeClass != WindowWidthSizeClass.Compact
@@ -204,34 +228,20 @@ fun BrowserScreen(
         viewModel.navigateBack()
     }
 
-    Scaffold(
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        snackbarHost = {
-            SnackbarHost(
-                hostState = snackbarHostState,
-                modifier = Modifier
-                    .then(
-                        if (uiState.isTabSwitcherOpen) {
-                            Modifier
-                                .windowInsetsPadding(WindowInsets.navigationBars)
-                                .padding(bottom = 100.dp)
-                        } else {
-                            Modifier
-                        }
-                    )
-                    .testTag("browser_snackbar_host")
-            )
-        },
-        topBar = {
-            if (!uiState.isSearchScreenOpen &&
-                !uiState.isSettingsScreenOpen &&
-                !uiState.isBookmarksScreenOpen &&
-                !uiState.isHistoryScreenOpen &&
-                !uiState.isDownloadsScreenOpen &&
-                !uiState.isOfflinePagesScreenOpen &&
-                !uiState.isPasswordManagerOpen &&
-                !uiState.isTabSwitcherOpen
-            ) {
+    val (enterOverlay, exitOverlay) = ApexMotion.containerTransformSpec(reducedMotion)
+    val isAnyFullScreenOverlayOpen = uiState.isSearchScreenOpen ||
+        uiState.isSettingsScreenOpen ||
+        uiState.isBookmarksScreenOpen ||
+        uiState.isHistoryScreenOpen ||
+        uiState.isDownloadsScreenOpen ||
+        uiState.isOfflinePagesScreenOpen ||
+        uiState.isPasswordManagerOpen ||
+        uiState.isTabSwitcherOpen
+
+    Box(modifier = modifier.fillMaxSize()) {
+        Scaffold(
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
+            topBar = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     CompactTopToolbar(
                         visible = uiState.isToolbarVisible || activeTab.isHomePage,
@@ -302,18 +312,8 @@ fun BrowserScreen(
                         )
                     }
                 }
-            }
-        },
-        bottomBar = {
-            if (!uiState.isTabSwitcherOpen &&
-                !uiState.isSearchScreenOpen &&
-                !uiState.isSettingsScreenOpen &&
-                !uiState.isBookmarksScreenOpen &&
-                !uiState.isHistoryScreenOpen &&
-                !uiState.isDownloadsScreenOpen &&
-                !uiState.isOfflinePagesScreenOpen &&
-                !uiState.isPasswordManagerOpen
-            ) {
+            },
+            bottomBar = {
                 val activeGroup = uiState.activeTabGroup
                 val showGroupStrip = activeGroup != null
 
@@ -373,107 +373,108 @@ fun BrowserScreen(
                         onMenuClick = viewModel::toggleMenuSheet
                     )
                 }
-            }
-        },
-        modifier = modifier.fillMaxSize()
-    ) { innerPadding ->
-        val (enterOverlay, exitOverlay) = ApexMotion.containerTransformSpec(reducedMotion)
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
-            Row(modifier = Modifier.fillMaxSize()) {
-                // Main Browser Content Area with Shared-Axis Tab Switching
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                ) {
-                    val forwardSwitch = uiState.activeTabIndex >= uiState.previousTabIndex
-                    AnimatedContent(
-                        targetState = activeTab,
-                        contentKey = { it.id },
-                        transitionSpec = {
-                            ApexMotion.sharedAxisTabTransition(
-                                forward = forwardSwitch,
-                                reducedMotion = reducedMotion
-                            )
-                        },
-                        label = "SharedAxisTabContent"
-                    ) { currentTab ->
-                        if (currentTab.isHomePage) {
-                            StartPageHome(
-                                preferences = preferences,
-                                topVisits = topVisits,
-                                onOpenSearchScreen = {
-                                    viewModel.openSearchScreen(prefillCurrentUrl = false)
-                                },
-                                onSelectDestination = { url ->
-                                    viewModel.submitNavigation(url, currentTab.id)
-                                },
-                                onAddTopVisit = viewModel::addTopVisit,
-                                onDeleteTopVisit = viewModel::deleteTopVisit,
-                                offlinePagesCount = offlinePagesCount,
-                                onOpenOfflinePagesScreen = {
-                                    viewModel.setOfflinePagesScreenOpen(true)
-                                },
-                                isIncognito = currentTab.isPrivate,
-                                incognitoTabsCount = uiState.incognitoTabCount,
-                                onCloseAllIncognitoTabs = viewModel::closeAllIncognitoTabs
-                            )
-                        } else {
-                            WebViewViewport(
-                                tab = currentTab,
-                                preferences = preferences,
-                                privacyManager = viewModel.privacyManager,
-                                performanceOptimizer = viewModel.performanceOptimizer,
-                                existingWebView = viewModel.getWebView(currentTab.id),
-                                onRegisterWebView = viewModel::registerWebView,
-                                onPageStarted = viewModel::onWebViewPageStarted,
-                                onProgressChanged = viewModel::onWebViewProgress,
-                                onPageFinished = viewModel::onWebViewPageFinished,
-                                onSubresourceBlocked = viewModel::onSubresourceBlocked,
-                                onHttpsUpgradeTriggered = { _ ->
-                                    viewModel.recordHttpsUpgradeStat()
-                                },
-                                onScrollDelta = viewModel::onWebViewScrollDelta,
-                                onPageLoadFailed = { tabId, failedUrl ->
-                                    viewModel.onPageLoadFailed(tabId, failedUrl)
-                                },
-                                onRefreshPage = viewModel::reloadActiveTab,
-                                onOpenInNewTab = { url ->
-                                    viewModel.openLinkInNewTab(url, inGroup = false, isPrivate = false)
-                                },
-                                onOpenInNewTabInGroup = { url ->
-                                    viewModel.openLinkInNewTab(url, inGroup = true, isPrivate = false)
-                                },
-                                onOpenInPrivateTab = { url ->
-                                    viewModel.openLinkInNewTab(url, inGroup = false, isPrivate = true)
-                                },
-                                onOpenInNewWindow = { url ->
-                                    viewModel.openLinkInNewTab(url, inGroup = false, isPrivate = false, switchToTab = true)
-                                },
-                                onAddToReadingList = { title, url ->
-                                    viewModel.addLinkToReadingList(title, url)
-                                },
-                                onDownloadFile = { url, fileName, contentDisposition, mimeType, contentLength, userAgent ->
-                                    viewModel.startFastDownload(
-                                        url = url,
-                                        suggestedFileName = fileName,
-                                        contentDisposition = contentDisposition,
-                                        mimeType = mimeType,
-                                        contentLength = contentLength,
-                                        userAgent = userAgent
-                                    )
-                                },
-                                onCredentialSubmitted = viewModel::onWebCredentialSubmitted
-                            )
+            },
+            modifier = Modifier.fillMaxSize()
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                Row(modifier = Modifier.fillMaxSize()) {
+                    // Main Browser Content Area with tear-free Tab Switching
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                    ) {
+                        val forwardSwitch = uiState.activeTabIndex >= uiState.previousTabIndex
+                        AnimatedContent(
+                            targetState = activeTab.id,
+                            transitionSpec = {
+                                ApexMotion.sharedAxisTabTransition(
+                                    forward = forwardSwitch,
+                                    reducedMotion = reducedMotion
+                                )
+                            },
+                            label = "SharedAxisTabContent"
+                        ) { tabId ->
+                            val currentTab = uiState.tabs.firstOrNull { it.id == tabId }
+                            if (currentTab == null) {
+                                Box(modifier = Modifier.fillMaxSize())
+                            } else if (currentTab.isHomePage) {
+                                StartPageHome(
+                                    preferences = preferences,
+                                    topVisits = topVisits,
+                                    onOpenSearchScreen = {
+                                        viewModel.openSearchScreen(prefillCurrentUrl = false)
+                                    },
+                                    onSelectDestination = { url ->
+                                        viewModel.submitNavigation(url, currentTab.id)
+                                    },
+                                    onAddTopVisit = viewModel::addTopVisit,
+                                    onDeleteTopVisit = viewModel::deleteTopVisit,
+                                    offlinePagesCount = offlinePagesCount,
+                                    onOpenOfflinePagesScreen = {
+                                        viewModel.setOfflinePagesScreenOpen(true)
+                                    },
+                                    isIncognito = currentTab.isPrivate,
+                                    incognitoTabsCount = uiState.incognitoTabCount,
+                                    onCloseAllIncognitoTabs = viewModel::closeAllIncognitoTabs
+                                )
+                            } else {
+                                WebViewViewport(
+                                    tab = currentTab,
+                                    preferences = preferences,
+                                    privacyManager = viewModel.privacyManager,
+                                    performanceOptimizer = viewModel.performanceOptimizer,
+                                    existingWebView = viewModel.getWebView(currentTab.id),
+                                    onRegisterWebView = viewModel::registerWebView,
+                                    onPageStarted = viewModel::onWebViewPageStarted,
+                                    onUrlCommitted = viewModel::onWebViewUrlCommitted,
+                                    onProgressChanged = viewModel::onWebViewProgress,
+                                    onPageFinished = viewModel::onWebViewPageFinished,
+                                    onSubresourceBlocked = viewModel::onSubresourceBlocked,
+                                    onHttpsUpgradeTriggered = { _ ->
+                                        viewModel.recordHttpsUpgradeStat()
+                                    },
+                                    onScrollDelta = viewModel::onWebViewScrollDelta,
+                                    onPageLoadFailed = { failedTabId, failedUrl ->
+                                        viewModel.onPageLoadFailed(failedTabId, failedUrl)
+                                    },
+                                    onRefreshPage = viewModel::reloadActiveTab,
+                                    onOpenInNewTab = { url ->
+                                        viewModel.openLinkInNewTab(url, inGroup = false, isPrivate = false)
+                                    },
+                                    onOpenInNewTabInGroup = { url ->
+                                        viewModel.openLinkInNewTab(url, inGroup = true, isPrivate = false)
+                                    },
+                                    onOpenInPrivateTab = { url ->
+                                        viewModel.openLinkInNewTab(url, inGroup = false, isPrivate = true)
+                                    },
+                                    onOpenInNewWindow = { url ->
+                                        viewModel.openLinkInNewTab(url, inGroup = false, isPrivate = false, switchToTab = true)
+                                    },
+                                    onAddToReadingList = { title, url ->
+                                        viewModel.addLinkToReadingList(title, url)
+                                    },
+                                    onDownloadFile = { url, fileName, contentDisposition, mimeType, contentLength, userAgent ->
+                                        requestNotificationPermissionIfNeeded()
+                                        viewModel.startFastDownload(
+                                            url = url,
+                                            suggestedFileName = fileName,
+                                            contentDisposition = contentDisposition,
+                                            mimeType = mimeType,
+                                            contentLength = contentLength,
+                                            userAgent = userAgent
+                                        )
+                                    },
+                                    onCredentialSubmitted = viewModel::onWebCredentialSubmitted
+                                )
+                            }
                         }
                     }
                 }
-            }
 
             // Live 1-Tap Password Autofill Bar when visiting sites with saved credentials
             val showAutofillBar = !activeTab.isHomePage &&
@@ -661,14 +662,18 @@ fun BrowserScreen(
                     }
                 }
             }
+        }
+    }
 
-            // Dedicated Search Screen
-            AnimatedVisibility(
-                visible = uiState.isSearchScreenOpen,
-                enter = fadeIn(tween(140)),
-                exit = fadeOut(tween(120)),
-                modifier = Modifier.fillMaxSize()
-            ) {
+        // Dedicated Search Screen (layered above Scaffold so topBar/bottomBar never jump)
+        AnimatedVisibility(
+            visible = uiState.isSearchScreenOpen,
+            enter = fadeIn(tween(120)),
+            exit = fadeOut(tween(100)),
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(10f)
+        ) {
                 SearchScreenOverlay(
                     query = uiState.searchQuery,
                     selectedEngine = preferences.searchEngine,
@@ -689,9 +694,11 @@ fun BrowserScreen(
             // Settings Screen Overlay (Opened from Hamburger Menu Bottom Sheet)
             AnimatedVisibility(
                 visible = uiState.isSettingsScreenOpen,
-                enter = if (reducedMotion) fadeIn() else enterOverlay,
-                exit = if (reducedMotion) fadeOut() else exitOverlay,
-                modifier = Modifier.fillMaxSize()
+                enter = if (reducedMotion) fadeIn(tween(90)) else enterOverlay,
+                exit = if (reducedMotion) fadeOut(tween(70)) else exitOverlay,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(10f)
             ) {
                 SettingsScreenOverlay(
                     preferences = preferences,
@@ -727,9 +734,11 @@ fun BrowserScreen(
             // Offline Pages Screen Overlay
             AnimatedVisibility(
                 visible = uiState.isOfflinePagesScreenOpen,
-                enter = if (reducedMotion) fadeIn() else enterOverlay,
-                exit = if (reducedMotion) fadeOut() else exitOverlay,
-                modifier = Modifier.fillMaxSize()
+                enter = if (reducedMotion) fadeIn(tween(90)) else enterOverlay,
+                exit = if (reducedMotion) fadeOut(tween(70)) else exitOverlay,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(10f)
             ) {
                 OfflinePagesScreenOverlay(
                     offlinePages = offlinePages,
@@ -743,9 +752,11 @@ fun BrowserScreen(
             // Bookmarks Screen Overlay
             AnimatedVisibility(
                 visible = uiState.isBookmarksScreenOpen,
-                enter = if (reducedMotion) fadeIn() else enterOverlay,
-                exit = if (reducedMotion) fadeOut() else exitOverlay,
-                modifier = Modifier.fillMaxSize()
+                enter = if (reducedMotion) fadeIn(tween(90)) else enterOverlay,
+                exit = if (reducedMotion) fadeOut(tween(70)) else exitOverlay,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(10f)
             ) {
                 BookmarksScreenOverlay(
                     bookmarks = bookmarks,
@@ -760,9 +771,11 @@ fun BrowserScreen(
             // Dedicated Browsing History Screen Overlay
             AnimatedVisibility(
                 visible = uiState.isHistoryScreenOpen,
-                enter = if (reducedMotion) fadeIn() else enterOverlay,
-                exit = if (reducedMotion) fadeOut() else exitOverlay,
-                modifier = Modifier.fillMaxSize()
+                enter = if (reducedMotion) fadeIn(tween(90)) else enterOverlay,
+                exit = if (reducedMotion) fadeOut(tween(70)) else exitOverlay,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(10f)
             ) {
                 HistoryScreenOverlay(
                     historyItems = browsingHistory,
@@ -785,21 +798,30 @@ fun BrowserScreen(
             // Dedicated Fast Downloads Screen Overlay
             AnimatedVisibility(
                 visible = uiState.isDownloadsScreenOpen,
-                enter = if (reducedMotion) fadeIn() else enterOverlay,
-                exit = if (reducedMotion) fadeOut() else exitOverlay,
-                modifier = Modifier.fillMaxSize()
+                enter = if (reducedMotion) fadeIn(tween(90)) else enterOverlay,
+                exit = if (reducedMotion) fadeOut(tween(70)) else exitOverlay,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(10f)
             ) {
                 DownloadsScreenOverlay(
                     downloads = downloads,
                     onStartNewDownload = { url, customFileName ->
+                        requestNotificationPermissionIfNeeded()
                         viewModel.startFastDownload(
                             url = url,
                             suggestedFileName = customFileName
                         )
                     },
                     onPauseDownload = viewModel::pauseDownload,
-                    onResumeDownload = viewModel::resumeDownload,
-                    onRetryDownload = viewModel::retryDownload,
+                    onResumeDownload = { id ->
+                        requestNotificationPermissionIfNeeded()
+                        viewModel.resumeDownload(id)
+                    },
+                    onRetryDownload = { id ->
+                        requestNotificationPermissionIfNeeded()
+                        viewModel.retryDownload(id)
+                    },
                     onCancelDownload = viewModel::cancelDownload,
                     onDeleteDownload = viewModel::deleteDownload,
                     onClearCompletedDownloads = viewModel::clearCompletedDownloads,
@@ -814,9 +836,11 @@ fun BrowserScreen(
             // Dedicated Material 3 Expressive Password Manager Overlay
             AnimatedVisibility(
                 visible = uiState.isPasswordManagerOpen,
-                enter = if (reducedMotion) fadeIn() else enterOverlay,
-                exit = if (reducedMotion) fadeOut() else exitOverlay,
-                modifier = Modifier.fillMaxSize()
+                enter = if (reducedMotion) fadeIn(tween(90)) else enterOverlay,
+                exit = if (reducedMotion) fadeOut(tween(70)) else exitOverlay,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(10f)
             ) {
                 PasswordManagerScreenOverlay(
                     passwords = savedPasswords,
@@ -839,9 +863,11 @@ fun BrowserScreen(
             // Draggable Grid Tab Switcher Overlay (No Bottom Nav — Centered Pills)
             AnimatedVisibility(
                 visible = uiState.isTabSwitcherOpen,
-                enter = if (reducedMotion) fadeIn() else enterOverlay,
-                exit = if (reducedMotion) fadeOut() else exitOverlay,
-                modifier = Modifier.fillMaxSize()
+                enter = if (reducedMotion) fadeIn(tween(90)) else enterOverlay,
+                exit = if (reducedMotion) fadeOut(tween(70)) else exitOverlay,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(10f)
             ) {
                 DraggableTabGridOverlay(
                     gridEntries = uiState.gridEntries,
@@ -873,58 +899,72 @@ fun BrowserScreen(
                 )
             }
 
-            // Hamburger Menu ModalBottomSheet (contains Settings & Quick Browser Actions)
-            if (uiState.isMenuSheetOpen) {
-                BrowserMenuBottomSheet(
-                    isHomeActive = activeTab.isHomePage,
-                    desktopViewportEnabled = preferences.desktopViewportEnabled,
-                    savedOfflinePagesCount = offlinePagesCount,
-                    browsingHistoryCount = browsingHistoryCount,
-                    downloadsCount = downloadsCount,
-                    savedPasswordsCount = savedPasswordsCount,
-                    isDefaultBrowser = defaultBrowserStatus.isApexDefault,
-                    onOpenSettings = { viewModel.setSettingsScreenOpen(true) },
-                    onSetAsDefaultBrowserClick = {
-                        runCatching {
-                            defaultBrowserLauncher.launch(
-                                DefaultBrowserHelper.createRequestOrSettingsIntent(
-                                    context = context,
-                                    preferSystemSettingsWhenDefault = false
-                                )
-                            )
-                        }
-                    },
-                    onNewTabClick = { viewModel.createNewTab() },
-                    onNewIncognitoTabClick = { viewModel.createNewIncognitoTab() },
-                    onOpenBookmarksClick = { viewModel.setBookmarksScreenOpen(true) },
-                    onOpenHistoryClick = { viewModel.setHistoryScreenOpen(true) },
-                    onOpenDownloadsClick = { viewModel.setDownloadsScreenOpen(true) },
-                    onOpenPasswordsClick = { viewModel.setPasswordManagerOpen(true) },
-                    onSaveOfflineClick = viewModel::saveCurrentPageForOffline,
-                    onOpenOfflinePagesClick = { viewModel.setOfflinePagesScreenOpen(true) },
-                    onReloadPageClick = viewModel::reloadActiveTab,
-                    onToggleDesktopMode = viewModel::toggleDesktopViewport,
-                    onClearBrowsingData = viewModel::resetPrivacyStats,
-                    onDismiss = { viewModel.setMenuSheetOpen(false) }
-                )
-            }
+        val snackbarBottomPadding = when {
+            uiState.isTabSwitcherOpen -> 100.dp
+            !isAnyFullScreenOverlayOpen -> if (uiState.activeTabGroup != null) 144.dp else 88.dp
+            else -> 16.dp
+        }
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(bottom = snackbarBottomPadding)
+                .zIndex(60f)
+                .testTag("browser_snackbar_host")
+        )
 
-            // Group Rename & Tonal Color Picker Dialog
-            val groupToEdit = uiState.editingGroup
-            if (groupToEdit != null) {
-                GroupRenameColorDialog(
-                    group = groupToEdit,
-                    onSave = { newTitle, selectedColor ->
-                        viewModel.updateGroupTitleAndColor(
-                            groupId = groupToEdit.id,
-                            newTitle = newTitle,
-                            colorOption = selectedColor
+        // Hamburger Menu ModalBottomSheet (contains Settings & Quick Browser Actions)
+        if (uiState.isMenuSheetOpen) {
+            BrowserMenuBottomSheet(
+                isHomeActive = activeTab.isHomePage,
+                desktopViewportEnabled = preferences.desktopViewportEnabled,
+                savedOfflinePagesCount = offlinePagesCount,
+                browsingHistoryCount = browsingHistoryCount,
+                downloadsCount = downloadsCount,
+                savedPasswordsCount = savedPasswordsCount,
+                isDefaultBrowser = defaultBrowserStatus.isApexDefault,
+                onOpenSettings = { viewModel.setSettingsScreenOpen(true) },
+                onSetAsDefaultBrowserClick = {
+                    runCatching {
+                        defaultBrowserLauncher.launch(
+                            DefaultBrowserHelper.createRequestOrSettingsIntent(
+                                context = context,
+                                preferSystemSettingsWhenDefault = false
+                            )
                         )
-                    },
-                    onUngroupAll = { viewModel.ungroupAllInGroup(groupToEdit.id) },
-                    onDismiss = viewModel::dismissGroupEditor
-                )
-            }
+                    }
+                },
+                onNewTabClick = { viewModel.createNewTab() },
+                onNewIncognitoTabClick = { viewModel.createNewIncognitoTab() },
+                onOpenBookmarksClick = { viewModel.setBookmarksScreenOpen(true) },
+                onOpenHistoryClick = { viewModel.setHistoryScreenOpen(true) },
+                onOpenDownloadsClick = { viewModel.setDownloadsScreenOpen(true) },
+                onOpenPasswordsClick = { viewModel.setPasswordManagerOpen(true) },
+                onSaveOfflineClick = viewModel::saveCurrentPageForOffline,
+                onOpenOfflinePagesClick = { viewModel.setOfflinePagesScreenOpen(true) },
+                onReloadPageClick = viewModel::reloadActiveTab,
+                onToggleDesktopMode = viewModel::toggleDesktopViewport,
+                onClearBrowsingData = viewModel::resetPrivacyStats,
+                onDismiss = { viewModel.setMenuSheetOpen(false) }
+            )
+        }
+
+        // Group Rename & Tonal Color Picker Dialog
+        val groupToEdit = uiState.editingGroup
+        if (groupToEdit != null) {
+            GroupRenameColorDialog(
+                group = groupToEdit,
+                onSave = { newTitle, selectedColor ->
+                    viewModel.updateGroupTitleAndColor(
+                        groupId = groupToEdit.id,
+                        newTitle = newTitle,
+                        colorOption = selectedColor
+                    )
+                },
+                onUngroupAll = { viewModel.ungroupAllInGroup(groupToEdit.id) },
+                onDismiss = viewModel::dismissGroupEditor
+            )
         }
     }
 }

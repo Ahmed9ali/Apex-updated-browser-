@@ -127,6 +127,15 @@ class BrowserRepository(
                 ?.apply()
         }
 
+        // Ensure Brave Search is set as the default search engine
+        val resetBraveDefault = sharedPrefs?.getBoolean("reset_default_search_engine_brave_v1", false) ?: true
+        if (!resetBraveDefault) {
+            preferencesRepository.setSearchEngine(SearchEngineOption.BRAVE)
+            sharedPrefs?.edit()
+                ?.putBoolean("reset_default_search_engine_brave_v1", true)
+                ?.apply()
+        }
+
         // Restore only real user-added top visits from SharedPreferences if DB is empty
         if (dao.getTopVisitsOnce().isEmpty()) {
             val restoredJson = sharedPrefs?.getString("user_added_top_visits_json", null)

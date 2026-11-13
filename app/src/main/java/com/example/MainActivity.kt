@@ -9,20 +9,29 @@ import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSiz
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.engine.DownloadNotificationHelper
 import com.example.ui.browser.BrowserScreen
 import com.example.ui.theme.ApexBrowserTheme
 import com.example.ui.viewmodel.BrowserViewModel
 
 class MainActivity : ComponentActivity() {
 
+    private var openDownloadsTrigger by mutableIntStateOf(0)
+    private var pendingViewUrl by androidx.compose.runtime.mutableStateOf<String?>(null)
+
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        val initialIntentUrl = extractBrowsableUrl(intent)
+        pendingViewUrl = extractBrowsableUrl(intent)
+        if (intent?.action == DownloadNotificationHelper.ACTION_OPEN_DOWNLOADS) {
+            openDownloadsTrigger += 1
+        }
 
         setContent {
             val browserViewModel: BrowserViewModel = viewModel(
@@ -31,9 +40,17 @@ class MainActivity : ComponentActivity() {
             val preferences by browserViewModel.preferencesState.collectAsStateWithLifecycle()
             val windowSizeClass = calculateWindowSizeClass(activity = this)
 
-            LaunchedEffect(initialIntentUrl) {
-                if (!initialIntentUrl.isNullOrBlank()) {
-                    browserViewModel.submitNavigation(initialIntentUrl)
+            LaunchedEffect(pendingViewUrl) {
+                val url = pendingViewUrl
+                if (!url.isNullOrBlank()) {
+                    browserViewModel.submitNavigation(url)
+                    pendingViewUrl = null
+                }
+            }
+
+            LaunchedEffect(openDownloadsTrigger) {
+                if (openDownloadsTrigger > 0) {
+                    browserViewModel.setDownloadsScreenOpen(true)
                 }
             }
 
@@ -46,6 +63,17 @@ class MainActivity : ComponentActivity() {
                     windowSizeClass = windowSizeClass
                 )
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        extractBrowsableUrl(intent)?.takeIf { it.isNotBlank() }?.let { url ->
+            pendingViewUrl = url
+        }
+        if (intent.action == DownloadNotificationHelper.ACTION_OPEN_DOWNLOADS) {
+            openDownloadsTrigger += 1
         }
     }
 

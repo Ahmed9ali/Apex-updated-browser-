@@ -674,24 +674,61 @@ class BrowserViewModel(
         }
     }
 
-    fun onWebViewProgress(tabId: String, progress: Int) {
-        val wv = webViewRegistry[tabId]
+    fun onWebViewUrlCommitted(tabId: String, url: String) {
+        if (url.startsWith("data:") || url.isBlank()) return
+        val currentTab = _uiState.value.tabs.firstOrNull { it.id == tabId } ?: return
+        val effectiveUrl = mapBaseUrlBackToScheme(url, currentTab.url)
+        val isHttps = effectiveUrl.startsWith("https://") || effectiveUrl.startsWith("apex://")
+        if (currentTab.url == effectiveUrl && currentTab.isHttps == isHttps) return
         _uiState.update { state ->
             state.copy(
                 tabs = state.tabs.map { tab ->
                     if (tab.id == tabId) {
-                        val isDone = progress >= 100
-                        val liveUrl = wv?.url?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
-                            ?.let { mapBaseUrlBackToScheme(it, tab.url) }
-                            ?: tab.url
-                        val liveTitle = wv?.title?.takeIf { it.isNotBlank() } ?: tab.title
+                        tab.copy(
+                            url = effectiveUrl,
+                            isHttps = isHttps
+                        )
+                    } else {
+                        tab
+                    }
+                }
+            )
+        }
+    }
+
+    fun onWebViewProgress(tabId: String, progress: Int) {
+        val wv = webViewRegistry[tabId]
+        val existingTab = _uiState.value.tabs.firstOrNull { it.id == tabId } ?: return
+        val isDone = progress >= 100
+        val targetProgress = (progress / 100f).coerceIn(0f, 1f)
+        val liveUrl = wv?.url?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
+            ?.let { mapBaseUrlBackToScheme(it, existingTab.url) }
+            ?: existingTab.url
+        val liveTitle = wv?.title?.takeIf { it.isNotBlank() } ?: existingTab.title
+        val canGoBack = wv?.canGoBack() ?: existingTab.canGoBack
+        val canGoForward = wv?.canGoForward() ?: existingTab.canGoForward
+
+        if (!isDone &&
+            existingTab.isLoading == !isDone &&
+            kotlin.math.abs(existingTab.progress - targetProgress) < 0.05f &&
+            existingTab.url == liveUrl &&
+            existingTab.canGoBack == canGoBack &&
+            existingTab.canGoForward == canGoForward
+        ) {
+            return
+        }
+
+        _uiState.update { state ->
+            state.copy(
+                tabs = state.tabs.map { tab ->
+                    if (tab.id == tabId) {
                         tab.copy(
                             url = liveUrl,
                             title = if (isDone) liveTitle else tab.title,
-                            progress = (progress / 100f).coerceIn(0f, 1f),
+                            progress = targetProgress,
                             isLoading = !isDone,
-                            canGoBack = wv?.canGoBack() ?: tab.canGoBack,
-                            canGoForward = wv?.canGoForward() ?: tab.canGoForward
+                            canGoBack = canGoBack,
+                            canGoForward = canGoForward
                         )
                     } else {
                         tab
@@ -708,7 +745,6 @@ class BrowserViewModel(
         canGoBack: Boolean,
         canGoForward: Boolean
     ) {
-        val capturedThumb = captureTabThumbnail(tabId)
         var finishedUrl = ""
         _uiState.update { state ->
             state.copy(
@@ -727,7 +763,6 @@ class BrowserViewModel(
                             progress = 1f,
                             canGoBack = canGoBack,
                             canGoForward = canGoForward,
-                            previewThumbnail = capturedThumb ?: tab.previewThumbnail,
                             lastActiveTimeMillis = System.currentTimeMillis()
                         )
                     } else {
@@ -2473,6 +2508,21 @@ class BrowserViewModel(
         }
         val builtIn = com.example.engine.BuiltInShowcasePages.resolveHtml(active.url)
         val wv = webViewRegistry[active.id]
+        _uiState.update { state ->
+            state.copy(
+                tabs = state.tabs.map { tab ->
+                    if (tab.id == active.id) {
+                        tab.copy(
+                            isLoading = true,
+                            progress = 0.08f,
+                            loadRequestId = if (wv == null) tab.loadRequestId + 1L else tab.loadRequestId
+                        )
+                    } else {
+                        tab
+                    }
+                }
+            )
+        }
         if (wv != null) {
             if (builtIn != null) {
                 wv.loadDataWithBaseURL(builtIn.first, builtIn.second, "text/html", "UTF-8", null)

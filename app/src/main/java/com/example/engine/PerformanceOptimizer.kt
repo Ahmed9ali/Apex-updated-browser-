@@ -241,11 +241,11 @@ class PerformanceOptimizer {
                             var orig = meta.getAttribute('data-apex-orig-viewport') || 'width=device-width, initial-scale=1.0';
                             meta.setAttribute('content', orig);
                             meta.removeAttribute('data-apex-orig-viewport');
-                        } else {
-                            meta.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes');
+                        } else if (meta.hasAttribute('data-apex-created')) {
+                            meta.parentNode && meta.parentNode.removeChild(meta);
                         }
                     }
-                    if (document.documentElement) {
+                    if (document.documentElement && document.documentElement.style.minWidth) {
                         document.documentElement.style.minWidth = '';
                     }
                 } catch (e) {}

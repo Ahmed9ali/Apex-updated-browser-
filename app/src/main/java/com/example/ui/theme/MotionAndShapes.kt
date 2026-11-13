@@ -10,21 +10,19 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Shapes
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 
 /**
@@ -74,39 +72,25 @@ object ApexMotion {
     }
 
     /**
-     * Shared-axis X transition for switching between tabs, falling back to crossfade on reduced motion.
+     * Crisp crossfade transition for switching between tabs without tearing hardware WebView surfaces.
      */
     fun sharedAxisTabTransition(forward: Boolean, reducedMotion: Boolean): ContentTransform {
-        if (reducedMotion) {
-            return fadeIn(tween(150)) togetherWith fadeOut(tween(150))
+        return if (reducedMotion) {
+            fadeIn(tween(90)) togetherWith fadeOut(tween(70))
+        } else {
+            fadeIn(tween(115)) togetherWith fadeOut(tween(85))
         }
-        val offsetSign = if (forward) 1 else -1
-        return (slideInHorizontally(
-            animationSpec = spring<IntOffset>(dampingRatio = 0.9f, stiffness = 700f),
-            initialOffsetX = { fullWidth -> (fullWidth * 0.18f * offsetSign).toInt() }
-        ) + fadeIn(animationSpec = spring(dampingRatio = 1.0f))) togetherWith
-            (slideOutHorizontally(
-                animationSpec = spring<IntOffset>(dampingRatio = 0.9f, stiffness = 700f),
-                targetOffsetX = { fullWidth -> (-fullWidth * 0.18f * offsetSign).toInt() }
-            ) + fadeOut(animationSpec = spring(dampingRatio = 1.0f)))
     }
 
     /**
-     * Container-transform style entrance/exit for opening the Nano & Retriever automation panel.
+     * Crisp opaque overlay transition avoiding offscreen full-screen scale resampling over WebView.
      */
     fun containerTransformSpec(reducedMotion: Boolean): Pair<androidx.compose.animation.EnterTransition, androidx.compose.animation.ExitTransition> {
-        if (reducedMotion) {
-            return fadeIn(tween(140)) to fadeOut(tween(140))
+        return if (reducedMotion) {
+            fadeIn(tween(90)) to fadeOut(tween(70))
+        } else {
+            fadeIn(tween(130)) to fadeOut(tween(100))
         }
-        val enter = scaleIn(
-            initialScale = 0.88f,
-            animationSpec = spring(dampingRatio = 0.9f, stiffness = 700f)
-        ) + fadeIn(animationSpec = spring(dampingRatio = 1.0f))
-        val exit = scaleOut(
-            targetScale = 0.90f,
-            animationSpec = spring(dampingRatio = 0.9f, stiffness = 700f)
-        ) + fadeOut(animationSpec = spring(dampingRatio = 1.0f))
-        return enter to exit
     }
 }
 
@@ -135,5 +119,13 @@ fun rememberMorphingCornerShape(
         animationSpec = if (reducedMotion) snap() else ApexMotion.spatialSpring(),
         label = label
     )
-    return RoundedCornerShape(animatedRadius.value)
+    return remember(animatedRadius) {
+        RoundedCornerShape(
+            object : CornerSize {
+                override fun toPx(shapeSize: Size, density: Density): Float {
+                    return with(density) { animatedRadius.value.toPx() }
+                }
+            }
+        )
+    }
 }

@@ -26,6 +26,13 @@ enum class SearchEngineOption(
     val description: String,
     val searchUrlTemplate: String
 ) {
+    BRAVE(
+        id = "brave",
+        displayName = "Brave Search",
+        shortBadge = "BRV",
+        description = "Independent search index with built-in privacy",
+        searchUrlTemplate = "https://search.brave.com/search?q=%s"
+    ),
     DUCKDUCKGO(
         id = "duckduckgo",
         displayName = "DuckDuckGo",
@@ -39,13 +46,6 @@ enum class SearchEngineOption(
         shortBadge = "G",
         description = "Comprehensive global web index and instant answers",
         searchUrlTemplate = "https://www.google.com/search?q=%s"
-    ),
-    BRAVE(
-        id = "brave",
-        displayName = "Brave Search",
-        shortBadge = "BRV",
-        description = "Independent search index with built-in privacy",
-        searchUrlTemplate = "https://search.brave.com/search?q=%s"
     ),
     BING(
         id = "bing",
@@ -64,7 +64,7 @@ enum class SearchEngineOption(
 
     companion object {
         fun fromId(id: String?): SearchEngineOption {
-            return entries.firstOrNull { it.id == id } ?: DUCKDUCKGO
+            return entries.firstOrNull { it.id == id } ?: BRAVE
         }
     }
 }
@@ -77,7 +77,7 @@ data class BrowserPreferences(
     val desktopViewportEnabled: Boolean = false,
     val dynamicColorEnabled: Boolean = true,
     val seedPaletteOrdinal: Int = 0,
-    val searchEngine: SearchEngineOption = SearchEngineOption.DUCKDUCKGO,
+    val searchEngine: SearchEngineOption = SearchEngineOption.BRAVE,
     val autoSaveOfflinePagesEnabled: Boolean = false,
     val showTopVisitsOnHome: Boolean = false,
     val passwordAutofillEnabled: Boolean = true
@@ -149,7 +149,7 @@ class UserPreferencesRepository(
                 ?: sharedPrefs?.getInt("seed_palette_ordinal", 0)
                 ?: 0
             val engineId = prefs[Keys.SEARCH_ENGINE_ID]
-                ?: sharedPrefs?.getString("search_engine_id", SearchEngineOption.DUCKDUCKGO.id)
+                ?: sharedPrefs?.getString("search_engine_id", SearchEngineOption.BRAVE.id)
             val autoSave = prefs[Keys.AUTO_SAVE_OFFLINE]
                 ?: sharedPrefs?.getBoolean("auto_save_offline_enabled", false)
                 ?: false

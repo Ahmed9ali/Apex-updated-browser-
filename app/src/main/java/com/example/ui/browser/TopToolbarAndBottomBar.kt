@@ -122,7 +122,7 @@ fun CompactTopToolbar(
     onReloadClick: () -> Unit,
     onSwipeToNextTab: () -> Unit = {},
     onSwipeToPreviousTab: () -> Unit = {},
-    searchEngine: com.example.data.preferences.SearchEngineOption = com.example.data.preferences.SearchEngineOption.DUCKDUCKGO,
+    searchEngine: com.example.data.preferences.SearchEngineOption = com.example.data.preferences.SearchEngineOption.BRAVE,
     modifier: Modifier = Modifier
 ) {
     val reducedMotion = LocalReducedMotion.current
@@ -243,7 +243,7 @@ fun CompactTopToolbar(
         exit = exitTransition,
         modifier = modifier
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
+        Box(modifier = Modifier.fillMaxWidth()) {
             TopAppBar(
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surfaceContainer,
@@ -441,6 +441,7 @@ fun CompactTopToolbar(
                     color = MaterialTheme.colorScheme.primary,
                     trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                     modifier = Modifier
+                        .align(Alignment.BottomCenter)
                         .fillMaxWidth()
                         .height(3.dp)
                         .testTag("page_loading_indicator")
